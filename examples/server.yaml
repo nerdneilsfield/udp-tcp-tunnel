@@ -1,35 +1,40 @@
 # udp-tcp-tunnel-server configuration.
 # Run: udp-tcp-tunnel-server -c server.yaml
+# Every key is described in
+# https://github.com/nerdneilsfield/udp-tcp-tunnel/blob/master/docs/configuration.md
 
-# TCP address the client connects to. Use a loopback address, or enable
-# TLS + token below, when this is reachable from untrusted networks.
+# TCP address the client connects to. Default ":9000" (all addresses).
+# On an address other than loopback, set a token and enable TLS; the server
+# logs a warning at startup when either is missing.
 listen: ":9000"
 
-# How UDP datagrams are obtained:
-#   socket    bind the UDP ports below (nothing else may own them)
-#   afpacket  passively sniff the ports on `interface` (Linux, needs
-#             CAP_NET_RAW); the existing receiver keeps its packets
+# How UDP datagrams are obtained. Default "socket".
+#   socket    bind the destination ports below; no other program can bind them
+#   afpacket  copy matching packets from `interface` while the program that
+#             owns the port keeps receiving them (Linux only, needs root or
+#             CAP_NET_RAW: sudo setcap cap_net_raw+ep udp-tcp-tunnel-server)
 capture: socket
 
-# socket mode: local address to bind the UDP ports on.
+# socket mode: IP address to bind the UDP ports on. Default "0.0.0.0".
 udp_bind: "0.0.0.0"
 
-# afpacket mode: interface to sniff. Verify first with
+# afpacket mode: interface to capture on. Check the traffic first with
 #   sudo tcpdump -ni eth0 -Q in 'udp and dst port 2368'
 # interface: eth0
 
-# Max datagrams waiting for the TCP writer. When full the newest datagram
-# is dropped and counted (queue_full). Default 1024.
+# Datagrams that can wait for the TCP writer. When the queue is full, the
+# newest datagram is dropped and counted as queue_full. Default 1024.
 queue_size: 1024
 
-# Datagrams with a larger payload are dropped (oversized). Max 65535.
+# Larger payloads are dropped and counted as oversized. Range 1 to 65535,
+# default 65535.
 max_payload: 65535
 
-# How often per-channel stats are logged. Default 10s.
+# Interval between stats log lines, as a Go duration. Default 10s.
 stats_interval: 10s
 
-# Shared secret the client must present (max 255 bytes). Strongly
-# recommended; pair it with TLS on untrusted networks.
+# Shared secret that the client must present, at most 255 bytes. Without TLS
+# it crosses the network in clear text.
 token: change-me
 
 # tls:
@@ -37,8 +42,11 @@ token: change-me
 #   cert_file: /etc/udp-tcp-tunnel/server.crt
 #   key_file: /etc/udp-tcp-tunnel/server.key
 
-# A datagram belongs to the most specific matching channel
-# (source_ip+source_port > source_ip > source_port > destination_port only).
+# Each channel needs a unique id (1 to 65535) that the client also lists, and
+# a destination_port. source_ip and source_port are optional. A datagram
+# belongs to the most specific matching channel:
+# source_ip+source_port > source_ip > source_port > destination_port only.
+# Datagrams that match no channel are counted as unknown_channel.
 channels:
   - id: 1
     name: lidar-201
