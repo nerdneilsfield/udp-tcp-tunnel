@@ -1,0 +1,6 @@
+server: "192.168.1.10:9000"
+reconnect_backoff: 2
+token: change-me
+channels:
+  - {id: 1, name: lidar-201, target: "127.0.0.1:2368"}
+  - {id: 2, name: lidar-202, target: "127.0.0.1:2369"}

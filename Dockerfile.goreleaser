@@ -1,9 +1,0 @@
-FROM gcr.io/distroless/static-debian13:nonroot
-
-ARG TARGETPLATFORM
-
-USER nonroot:nonroot
-WORKDIR /app
-COPY ${TARGETPLATFORM}/udp-tcp-tunnel /app/udp-tcp-tunnel
-
-ENTRYPOINT ["/app/udp-tcp-tunnel"]

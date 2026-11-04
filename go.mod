@@ -3,8 +3,10 @@ module github.com/nerdneilsfield/udp-tcp-tunnel
 go 1.27.1
 
 require (
+	github.com/google/gopacket v1.1.19
 	github.com/spf13/cobra v1.10.2
 	go.uber.org/zap v1.28.0
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

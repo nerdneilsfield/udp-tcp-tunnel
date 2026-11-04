@@ -11,11 +11,14 @@ LDFLAGS := -X $(PKG)/internal/buildinfo.Version=$(VERSION) -X $(PKG)/internal/bu
 help: ## list makefile targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}'
 
-build: ## build golang binary
-	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o $(projectname) .
+build: build-server build-client ## build server and client binaries
+build-server:
+	go build -ldflags '$(LDFLAGS)' -o udp-tcp-tunnel-server ./cmd/udp-tcp-tunnel-server
+build-client:
+	CGO_ENABLED=0 go build -ldflags '$(LDFLAGS)' -o udp-tcp-tunnel-client ./cmd/udp-tcp-tunnel-client
 
 install: ## install the app
-	go install -ldflags '$(LDFLAGS)' .
+	go install -ldflags '$(LDFLAGS)' ./cmd/udp-tcp-tunnel-server ./cmd/udp-tcp-tunnel-client
 
 run: ## run the app
 	go run -ldflags '$(LDFLAGS)' .

@@ -1,0 +1,8 @@
+listen: ":9000"
+udp_listen: ":2368"
+capture: socket
+queue_size: 1024
+token: change-me
+channels:
+  - {id: 1, name: lidar-201, source_ip: 192.168.1.201, destination_port: 2368}
+  - {id: 2, name: lidar-202, source_ip: 192.168.1.202, destination_port: 2368}

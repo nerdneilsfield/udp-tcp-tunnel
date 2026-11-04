@@ -1,5 +1,11 @@
 # udp-tcp-tunnel
 
+A small multi-channel UDP over one TCP connection. Run `udp-tcp-tunnel-server -c examples/server.yaml` near the lidars and `udp-tcp-tunnel-client -c examples/client.yaml` on the workstation. Source IP and source port are not preserved; TCP head-of-line blocking applies.
+
+`socket` mode owns the UDP port. Use Linux `afpacket` mode when another receiver owns it; it requires CAP_NET_RAW. Check traffic with `sudo tcpdump -ni eth0 -Q in 'udp and dst port 2368'`. TLS and a shared token are supported. The bounded server queue drops packets when full and disconnected traffic is dropped.
+
+Build with `make build`; run `go test -race ./...`. GoReleaser produces separate server Linux and client Linux/macOS/Windows archives. No container images are published.
+
 Multi-channel UDP over TCP tunnel with transparent packet forwarding.
 
 Built from [go-template](https://github.com/nerdneilsfield/go-template): cobra, zap, golangci-lint v2, GoReleaser v2, GitHub Actions and a distroless Docker image.

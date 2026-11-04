@@ -1,93 +1,23 @@
 version: 2
-env:
-  - CGO_ENABLED=0
-
 builds:
-  -
-    id: udp-tcp-tunnel
-    binary: udp-tcp-tunnel
-    flags:
-      - -trimpath
-    mod_timestamp: "{{ .CommitTimestamp }}"
-    ldflags:
-      - -s -w
-      - -X github.com/nerdneilsfield/udp-tcp-tunnel/internal/buildinfo.Version={{.Version}}
-      - -X github.com/nerdneilsfield/udp-tcp-tunnel/internal/buildinfo.Commit={{.FullCommit}}
-      - -X github.com/nerdneilsfield/udp-tcp-tunnel/internal/buildinfo.Date={{.Date}}
-    goos:
-      - linux
-      - darwin
-      - windows
-    goarch:
-      - amd64
-      - arm64
-
+  - id: server
+    main: ./cmd/udp-tcp-tunnel-server
+    binary: udp-tcp-tunnel-server
+    flags: [-tags=server]
+    goos: [linux]
+    goarch: [amd64, arm64]
+  - id: client
+    main: ./cmd/udp-tcp-tunnel-client
+    binary: udp-tcp-tunnel-client
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
 archives:
-  -
-    ids:
-      - udp-tcp-tunnel
-    formats: [tar.gz]
-    format_overrides:
-      - goos: windows
-        formats: [zip]
-
-release:
-  github:
-    owner: nerdneilsfield
-    name: udp-tcp-tunnel
-
-dockers_v2:
-  - id: udp-tcp-tunnel
-    dockerfile: Dockerfile.goreleaser
-    ids:
-      - udp-tcp-tunnel
-    images:
-      - nerdneils/udp-tcp-tunnel
-      - ghcr.io/nerdneilsfield/udp-tcp-tunnel
-    tags:
-      - "{{ .Tag }}"
-      - "{{ if not .IsNightly }}latest{{ end }}"
-    platforms:
-      - linux/amd64
-      - linux/arm64
-    labels:
-      "io.artifacthub.package.readme-url": "https://raw.githubusercontent.com/nerdneilsfield/udp-tcp-tunnel/master/README.md"
-      "io.artifacthub.package.maintainers": "[{\"name\":\"dengqqi\",\"email\":\"dengqqi935@gmail.com\"}]"
-      "io.artifacthub.package.license": "MIT"
-      "org.opencontainers.image.description": "Go template application."
-      "org.opencontainers.image.created": "{{ .Date }}"
-      "org.opencontainers.image.name": "{{ .ProjectName }}"
-      "org.opencontainers.image.revision": "{{ .FullCommit }}"
-      "org.opencontainers.image.version": "{{ .Version }}"
-      "org.opencontainers.image.source": "{{ .GitURL }}"
-
-checksum:
-  name_template: "checksums.txt"
-
-changelog:
-  sort: asc
-  use: github
-  filters:
-    exclude:
-    - '^test:'
-    - '^chore'
-    - 'merge conflict'
-    - Merge pull request
-    - Merge remote-tracking branch
-    - Merge branch
-    - go mod tidy
-  groups:
-    - title: Dependency updates
-      regexp: '^.*?(feat|fix)\(deps\)!?:.+$'
-      order: 300
-    - title: 'New Features'
-      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
-      order: 100
-    - title: 'Bug fixes'
-      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
-      order: 200
-    - title: 'Documentation updates'
-      regexp: ^.*?docs(\([[:word:]]+\))??!?:.+$
-      order: 400
-    - title: Other work
-      order: 9999
+  - id: server
+    ids: [server]
+    name_template: 'udp-tcp-tunnel-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+  - id: client
+    ids: [client]
+    name_template: 'udp-tcp-tunnel-client_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    format_overrides: [{goos: windows, formats: [zip]}]
+checksum: {name_template: checksums.txt}
+changelog: {sort: asc}
