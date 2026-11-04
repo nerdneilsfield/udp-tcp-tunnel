@@ -28,63 +28,86 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Check go.mod and go.sum are tidy
+        run: go mod tidy -diff
+      - name: Check formatting
+        run: make fmt-check
       - name: Lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
           args: -c .golangci.yml
-      - name: Check
-        run: |
-          test -z "$(gofmt -l .)"
-          go mod tidy -diff
-          go vet ./...
-          go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -race ./...
+
+  client-tests:
+    name: client tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Test client packages
+        run: >-
+          go test ./cmd/udp-tcp-tunnel-client/... ./internal/cli/... ./internal/config/...
+          ./internal/stats/... ./internal/tunnel/...
 
   cross-build:
+    name: build ${{ matrix.kind }} ${{ matrix.goos }}/${{ matrix.goarch }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - goos: linux
-            goarch: amd64
-            kind: client
-          - goos: linux
-            goarch: arm64
-            kind: client
-          - goos: darwin
-            goarch: amd64
-            kind: client
-          - goos: darwin
-            goarch: arm64
-            kind: client
-          - goos: windows
-            goarch: amd64
-            kind: client
-          - goos: windows
-            goarch: arm64
-            kind: client
-          - goos: linux
-            goarch: amd64
-            kind: server
-          - goos: linux
-            goarch: arm64
-            kind: server
+          - {kind: client, goos: linux, goarch: amd64}
+          - {kind: client, goos: linux, goarch: arm64}
+          - {kind: client, goos: darwin, goarch: amd64}
+          - {kind: client, goos: darwin, goarch: arm64}
+          - {kind: client, goos: windows, goarch: amd64}
+          - {kind: client, goos: windows, goarch: arm64}
+          - {kind: server, goos: linux, goarch: amd64}
+          - {kind: server, goos: linux, goarch: arm64}
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-        with: {go-version-file: go.mod}
-      - run: go build -o /tmp/${{ matrix.kind }} ./cmd/udp-tcp-tunnel-${{ matrix.kind }}
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
         env:
+          CGO_ENABLED: "0"
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: ${{ matrix.kind == 'server' && '1' || '0' }}
+          KIND: ${{ matrix.kind }}
+        run: go build -o /dev/null "./cmd/udp-tcp-tunnel-${KIND}"
+      - name: Client must not link capture or gopacket
         if: matrix.kind == 'client'
-      - run: go build -tags server -o /tmp/server ./cmd/udp-tcp-tunnel-server
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '1'
-        if: matrix.kind == 'server'
+        run: |
+          if go list -deps ./cmd/udp-tcp-tunnel-client | grep -E 'gopacket|internal/capture'; then
+            echo "client links server-only code" >&2
+            exit 1
+          fi
 
   release-check:
     runs-on: ubuntu-24.04

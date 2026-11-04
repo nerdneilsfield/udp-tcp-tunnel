@@ -19,7 +19,6 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,7 +31,7 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Test
-        run: CGO_ENABLED=0 go test ./...
+        run: go test ./...
       - name: Vet
         run: go vet ./...
       - name: Run GoReleaser
