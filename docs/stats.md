@@ -44,7 +44,7 @@ The drop counters are cumulative. Both lines always carry all seven `drop_` fiel
 | `capture_drop` | server | `global drops` | The kernel dropped frames because the AF_PACKET ring was full. Always 0 in `socket` mode. |
 | `no_client` | server | `channel stats` | A datagram arrived while no client was connected |
 | `write_error` | server | `channel stats` | Writing the frame to the TCP connection failed. The server then closes the connection. |
-| `write_error` | client | `channel stats` | Sending the datagram to `target` failed |
+| `write_error` | client | `channel stats` | Sending the datagram to `target` failed. On macOS this includes payloads larger than `net.inet.udp.maxdgram` (9216 bytes by default). |
 
 The server reads `capture_drop` and `fragment` from the capture layer just before each report, so these two counters change only at report time.
 

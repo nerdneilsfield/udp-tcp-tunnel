@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"runtime"
 	"testing"
 	"time"
 
@@ -143,7 +144,13 @@ func TestClientPreservesBoundariesAndDropsUnknownChannel(t *testing.T) {
 	sess := acceptSession(t, l)
 	defer sess.Close()
 
-	payloads := [][]byte{[]byte("a"), {}, bytes.Repeat([]byte{7}, 1206), bytes.Repeat([]byte{9}, 60000)}
+	// macOS limits a UDP datagram to net.inet.udp.maxdgram (9216 bytes by
+	// default), so a larger payload cannot be re-emitted there.
+	big := 60000
+	if runtime.GOOS == "darwin" {
+		big = 9000
+	}
+	payloads := [][]byte{[]byte("a"), {}, bytes.Repeat([]byte{7}, 1206), bytes.Repeat([]byte{9}, big)}
 	if err := sess.Send(42, []byte("nobody listens")); err != nil {
 		t.Fatal(err)
 	}
