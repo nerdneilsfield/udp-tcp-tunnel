@@ -1,4 +1,4 @@
-// Command go-template is the template CLI entry point.
+// Command udp-tcp-tunnel is the template CLI entry point.
 package main
 
 import (
@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/nerdneilsfield/go-template/cmd"
+	"github.com/nerdneilsfield/udp-tcp-tunnel/cmd"
 )
 
 func main() {

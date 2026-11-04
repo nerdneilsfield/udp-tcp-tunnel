@@ -1,4 +1,4 @@
-module github.com/nerdneilsfield/go-template
+module github.com/nerdneilsfield/udp-tcp-tunnel
 
 go 1.27.1
 

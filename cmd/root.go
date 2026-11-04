@@ -1,4 +1,4 @@
-// Package cmd defines the go-template command tree.
+// Package cmd defines the udp-tcp-tunnel command tree.
 package cmd
 
 import (
@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	"github.com/nerdneilsfield/go-template/internal/logging"
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/logging"
 )
 
 type loggerKey struct{}
@@ -17,8 +17,8 @@ func NewRootCmd() *cobra.Command {
 	var verbose bool
 
 	cmd := &cobra.Command{
-		Use:           "go-template",
-		Short:         "go-template is a template for go projects.",
+		Use:           "udp-tcp-tunnel",
+		Short:         "Multi-channel UDP over TCP tunnel with transparent packet forwarding.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		PersistentPreRun: func(cmd *cobra.Command, _ []string) {

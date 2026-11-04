@@ -4,6 +4,6 @@ ARG TARGETPLATFORM
 
 USER nonroot:nonroot
 WORKDIR /app
-COPY ${TARGETPLATFORM}/go-template /app/go-template
+COPY ${TARGETPLATFORM}/udp-tcp-tunnel /app/udp-tcp-tunnel
 
-ENTRYPOINT ["/app/go-template"]
+ENTRYPOINT ["/app/udp-tcp-tunnel"]
