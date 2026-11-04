@@ -34,7 +34,57 @@ jobs:
           version: v2.15.0
           args: -c .golangci.yml
       - name: Check
-        run: make fmt-check vet test
+        run: |
+          test -z "$(gofmt -l .)"
+          go mod tidy -diff
+          go vet ./...
+          go test -race ./...
+
+  cross-build:
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            kind: client
+          - goos: linux
+            goarch: arm64
+            kind: client
+          - goos: darwin
+            goarch: amd64
+            kind: client
+          - goos: darwin
+            goarch: arm64
+            kind: client
+          - goos: windows
+            goarch: amd64
+            kind: client
+          - goos: windows
+            goarch: arm64
+            kind: client
+          - goos: linux
+            goarch: amd64
+            kind: server
+          - goos: linux
+            goarch: arm64
+            kind: server
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+        with: {go-version-file: go.mod}
+      - run: go build -o /tmp/${{ matrix.kind }} ./cmd/udp-tcp-tunnel-${{ matrix.kind }}
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.kind == 'server' && '1' || '0' }}
+        if: matrix.kind == 'client'
+      - run: go build -tags server -o /tmp/server ./cmd/udp-tcp-tunnel-server
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '1'
+        if: matrix.kind == 'server'
 
   release-check:
     runs-on: ubuntu-24.04

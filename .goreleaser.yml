@@ -6,11 +6,13 @@ builds:
     flags: [-tags=server]
     goos: [linux]
     goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
   - id: client
     main: ./cmd/udp-tcp-tunnel-client
     binary: udp-tcp-tunnel-client
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
+    env: [CGO_ENABLED=0]
 archives:
   - id: server
     ids: [server]

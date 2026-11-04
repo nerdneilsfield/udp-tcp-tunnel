@@ -29,5 +29,7 @@ go.work.sum
 .idea/
 dist/
 /udp-tcp-tunnel
+udp-tcp-tunnel-server
+udp-tcp-tunnel-client
 coverage.out
 coverage.html
