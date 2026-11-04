@@ -1,25 +1,71 @@
+# GoReleaser v2: separate server (Linux only) and client archives.
 version: 2
+
+project_name: udp-tcp-tunnel
+
 builds:
   - id: server
     main: ./cmd/udp-tcp-tunnel-server
     binary: udp-tcp-tunnel-server
-    flags: [-tags=server]
+    env:
+      - CGO_ENABLED=0
     goos: [linux]
     goarch: [amd64, arm64]
-    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/nerdneilsfield/udp-tcp-tunnel/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/nerdneilsfield/udp-tcp-tunnel/internal/buildinfo.Commit={{ .ShortCommit }}
+      - -X github.com/nerdneilsfield/udp-tcp-tunnel/internal/buildinfo.Date={{ .Date }}
+
   - id: client
     main: ./cmd/udp-tcp-tunnel-client
     binary: udp-tcp-tunnel-client
+    env:
+      - CGO_ENABLED=0
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
-    env: [CGO_ENABLED=0]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/nerdneilsfield/udp-tcp-tunnel/internal/buildinfo.Version={{ .Version }}
+      - -X github.com/nerdneilsfield/udp-tcp-tunnel/internal/buildinfo.Commit={{ .ShortCommit }}
+      - -X github.com/nerdneilsfield/udp-tcp-tunnel/internal/buildinfo.Date={{ .Date }}
+
 archives:
   - id: server
     ids: [server]
-    name_template: 'udp-tcp-tunnel-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    formats: [tar.gz]
+    name_template: "udp-tcp-tunnel-server_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - src: examples/server.yaml
+        dst: server.yaml
   - id: client
     ids: [client]
-    name_template: 'udp-tcp-tunnel-client_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
-    format_overrides: [{goos: windows, formats: [zip]}]
-checksum: {name_template: checksums.txt}
-changelog: {sort: asc}
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "udp-tcp-tunnel-client_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE
+      - src: examples/client.yaml
+        dst: client.yaml
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  draft: false
+  prerelease: auto
