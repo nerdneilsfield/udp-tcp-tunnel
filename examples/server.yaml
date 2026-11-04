@@ -1,8 +1,50 @@
+# udp-tcp-tunnel-server configuration.
+# Run: udp-tcp-tunnel-server -c server.yaml
+
+# TCP address the client connects to. Use a loopback address, or enable
+# TLS + token below, when this is reachable from untrusted networks.
 listen: ":9000"
-udp_listen: ":2368"
+
+# How UDP datagrams are obtained:
+#   socket    bind the UDP ports below (nothing else may own them)
+#   afpacket  passively sniff the ports on `interface` (Linux, needs
+#             CAP_NET_RAW); the existing receiver keeps its packets
 capture: socket
+
+# socket mode: local address to bind the UDP ports on.
+udp_bind: "0.0.0.0"
+
+# afpacket mode: interface to sniff. Verify first with
+#   sudo tcpdump -ni eth0 -Q in 'udp and dst port 2368'
+# interface: eth0
+
+# Max datagrams waiting for the TCP writer. When full the newest datagram
+# is dropped and counted (queue_full). Default 1024.
 queue_size: 1024
+
+# Datagrams with a larger payload are dropped (oversized). Max 65535.
+max_payload: 65535
+
+# How often per-channel stats are logged. Default 10s.
+stats_interval: 10s
+
+# Shared secret the client must present (max 255 bytes). Strongly
+# recommended; pair it with TLS on untrusted networks.
 token: change-me
+
+# tls:
+#   enabled: true
+#   cert_file: /etc/udp-tcp-tunnel/server.crt
+#   key_file: /etc/udp-tcp-tunnel/server.key
+
+# A datagram belongs to the most specific matching channel
+# (source_ip+source_port > source_ip > source_port > destination_port only).
 channels:
-  - {id: 1, name: lidar-201, source_ip: 192.168.1.201, destination_port: 2368}
-  - {id: 2, name: lidar-202, source_ip: 192.168.1.202, destination_port: 2368}
+  - id: 1
+    name: lidar-201
+    source_ip: 192.168.1.201
+    destination_port: 2368
+  - id: 2
+    name: lidar-202
+    source_ip: 192.168.1.202
+    destination_port: 2368

@@ -1,31 +1,35 @@
+// Command udp-tcp-tunnel-client receives datagrams from a
+// udp-tcp-tunnel-server and re-emits them as local UDP packets.
 package main
 
 import (
 	"context"
-	"fmt"
-	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/config"
-	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/logging"
-	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/tunnel"
-	"github.com/spf13/cobra"
 	"os"
-	"os/signal"
-	"syscall"
+
+	"go.uber.org/zap"
+
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/cli"
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/config"
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/tunnel"
 )
 
 func main() {
-	var f string
-	c := &cobra.Command{Use: "udp-tcp-tunnel-client", RunE: func(*cobra.Command, []string) error {
-		var x config.Client
-		if e := config.Load(f, &x); e != nil {
-			return e
-		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		return tunnel.NewClient(x, logging.New(false)).Run(ctx)
-	}}
-	c.Flags().StringVarP(&f, "config", "c", "client.yaml", "config file")
-	if e := c.Execute(); e != nil {
-		fmt.Fprintln(os.Stderr, e)
-		os.Exit(1)
+	os.Exit(cli.Main(cli.Spec{
+		Name:          "udp-tcp-tunnel-client",
+		Short:         "Receive datagrams from the TCP tunnel and re-emit them as local UDP.",
+		DefaultConfig: "client.yaml",
+		Run:           run,
+	}))
+}
+
+func run(ctx context.Context, log *zap.Logger, path string) error {
+	cfg, err := config.LoadClient(path)
+	if err != nil {
+		return err
 	}
+	client, err := tunnel.NewClient(cfg, log)
+	if err != nil {
+		return err
+	}
+	return client.Run(ctx)
 }

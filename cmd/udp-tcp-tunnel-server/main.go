@@ -1,33 +1,31 @@
-//go:build server
-
+// Command udp-tcp-tunnel-server captures UDP datagrams and forwards them to
+// a udp-tcp-tunnel-client over one TCP connection.
 package main
 
 import (
 	"context"
-	"fmt"
-	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/config"
-	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/logging"
-	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/tunnel"
-	"github.com/spf13/cobra"
 	"os"
-	"os/signal"
-	"syscall"
+
+	"go.uber.org/zap"
+
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/cli"
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/config"
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/server"
 )
 
 func main() {
-	var f string
-	c := &cobra.Command{Use: "udp-tcp-tunnel-server", RunE: func(*cobra.Command, []string) error {
-		var x config.Server
-		if e := config.Load(f, &x); e != nil {
-			return e
-		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		return tunnel.NewServer(x, logging.New(false)).Run(ctx)
-	}}
-	c.Flags().StringVarP(&f, "config", "c", "server.yaml", "config file")
-	if e := c.Execute(); e != nil {
-		fmt.Fprintln(os.Stderr, e)
-		os.Exit(1)
+	os.Exit(cli.Main(cli.Spec{
+		Name:          "udp-tcp-tunnel-server",
+		Short:         "Capture UDP datagrams and forward them over a single TCP tunnel.",
+		DefaultConfig: "server.yaml",
+		Run:           run,
+	}))
+}
+
+func run(ctx context.Context, log *zap.Logger, path string) error {
+	cfg, err := config.LoadServer(path)
+	if err != nil {
+		return err
 	}
+	return server.New(cfg, log).Run(ctx)
 }

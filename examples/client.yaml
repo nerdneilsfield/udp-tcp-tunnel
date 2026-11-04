@@ -1,6 +1,32 @@
+# udp-tcp-tunnel-client configuration.
+# Run: udp-tcp-tunnel-client -c client.yaml
+
+# Address of udp-tcp-tunnel-server.
 server: "192.168.1.10:9000"
-reconnect_backoff: 2
+
+# Reconnect delay starts at the minimum, doubles after each failed attempt
+# and is capped at the maximum.
+reconnect_backoff_min: 1s
+reconnect_backoff_max: 30s
+
+# How often per-channel stats are logged. Default 10s.
+stats_interval: 10s
+
+# Must match the server's token.
 token: change-me
+
+# tls:
+#   enabled: true
+#   ca_file: /etc/udp-tcp-tunnel/ca.crt   # omit to use the system roots
+#   server_name: tunnel.example.com        # defaults to the host in `server`
+#   insecure_skip_verify: false            # testing only
+
+# Every datagram of a channel is sent, byte for byte, from this machine to
+# `target`. The original source address is not preserved.
 channels:
-  - {id: 1, name: lidar-201, target: "127.0.0.1:2368"}
-  - {id: 2, name: lidar-202, target: "127.0.0.1:2369"}
+  - id: 1
+    name: lidar-201
+    target: "127.0.0.1:2368"
+  - id: 2
+    name: lidar-202
+    target: "127.0.0.1:2369"
