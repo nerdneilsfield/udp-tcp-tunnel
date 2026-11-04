@@ -40,6 +40,7 @@ archives:
     files:
       - README.md
       - LICENSE
+      - docs/*
       - src: examples/server.yaml
         dst: server.yaml
   - id: client
@@ -52,6 +53,7 @@ archives:
     files:
       - README.md
       - LICENSE
+      - docs/*
       - src: examples/client.yaml
         dst: client.yaml
 
