@@ -13,6 +13,7 @@ udp-tcp-tunnel carries UDP datagrams from one host to another over a single TCP,
 - On Linux, the server can capture packets with AF_PACKET while another program keeps receiving them on the same port.
 - AF_PACKET capture uses a TPACKET_V3 ring from gopacket and a classic BPF filter generated in Go. It needs neither cgo nor libpcap.
 - Three transports: `tcp` (default, optionally with TLS), `quic` (TLS 1.3, UDP payloads in QUIC datagrams) and `kcp` (KCP over UDP, optional encryption key and FEC). Each client upstream picks its own.
+- Optional per-datagram compression with zstd or s2 on any transport. It is off by default, and a tunnel without it stays compatible with v0.2.0.
 - A shared token and TLS 1.2 or later can protect the tunnel.
 - Both sides log packet rates, byte counts and seven named drop counters for every channel at a fixed interval.
 - The client is released for Linux, macOS and Windows. It does not link the capture code.
@@ -244,6 +245,17 @@ Without the capability, startup fails with `afpacket capture on "eth0" (needs ro
 
 KCP sends the token and all data in clear text unless `kcp.key` is set on both sides. The key gives confidentiality only: KCP does not authenticate packets. Use `quic` on an untrusted network.
 
+### Compress the payloads
+
+`compression` shrinks each datagram before it crosses the tunnel. It helps when the payloads are compressible and the link is the bottleneck, for example text-like or sparse sensor data; encrypted or already compressed payloads gain nothing.
+
+```yaml
+# server.yaml and client.yaml: both ends must agree
+compression: zstd          # none (default), zstd or s2
+```
+
+Use the mapping form to set a level, `compression: {algorithm: zstd, level: 3}`. Each datagram is compressed on its own, so packet loss on `quic` or `kcp` never breaks later datagrams, and a datagram that does not shrink is sent as it is. If the ends differ, the handshake fails with a `compression mismatch` error. A client with compression `none` still works with a v0.2.0 server. See [docs/configuration.md](docs/configuration.md#compression) and [docs/protocol.md](docs/protocol.md#compression). Ratios and counters appear in the [`compression stats`](docs/stats.md#compression-stats) log line.
+
 ### Protect the tunnel
 
 Without TLS, the token and all data cross the network in clear text. When the server listens on an address that is not loopback and TLS or the token is missing, it logs this warning at startup:
@@ -291,6 +303,7 @@ Server (`server.yaml`):
 | `token` | empty | Shared secret that the client must present |
 | `tls` | off | Certificate and key; mandatory for `quic`, not allowed for `kcp` |
 | `kcp` | defaults | Tuning, FEC and `key` for `transport: kcp` |
+| `compression` | `none` | `none`, `zstd` or `s2`; must match the client |
 | `channels` | none | At least one channel with `id` and `destination_port` |
 
 Client (`client.yaml`):
@@ -306,6 +319,7 @@ Client (`client.yaml`):
 | `token` | empty | Default tunnel token; upstreams may override |
 | `tls` | off | Default TLS settings; upstreams may override |
 | `kcp` | defaults | Default KCP settings; upstreams may override |
+| `compression` | `none` | Default `none`, `zstd` or `s2`; upstreams may override |
 | `channels` | none | Channels for the single-upstream shape |
 
 Use [examples/client-multi.yaml](examples/client-multi.yaml) when one process should dial several servers. Channel IDs are unique per upstream only.
@@ -317,6 +331,7 @@ Unknown keys are rejected, so a misspelled key stops the program at startup.
 - **The source address is not preserved.** The receiver sees every datagram of a channel coming from the client host, from one UDP port that the client picks when it starts. A receiver that filters by sender address must be configured for the client address.
 - **A vanished TCP peer used to stall for minutes.** Writes can succeed into the kernel send buffer while retransmits run under `tcp_retries2` (often ~8–15 minutes). The tunnel now sets Linux `TCP_USER_TIMEOUT` to 30s and short keepalive probes so the session fails fast and the client reconnects.
 - **QUIC may lose and reorder datagrams.** QUIC datagrams are unreliable, so a datagram lost on the network is not retransmitted, and a payload above the path's datagram limit (about 1200 bytes at first, up to about 1450 after path MTU discovery) is sent on the reliable stream, which can arrive out of order relative to datagrams. Neither case is counted in the stats.
+- **Compression costs CPU and can leak sizes.** Compressed sizes depend on the content, so on an encrypted tunnel an observer can learn something about the payloads from packet sizes. Leave compression off when that matters. Datagram boundaries and content are always preserved.
 - **KCP is unencrypted by default.** Without `kcp.key` the token and the data are readable on the path. With a key they are encrypted but not authenticated.
 - **TCP adds head-of-line blocking.** All channels share one TCP connection. A lost TCP segment delays every channel until it is retransmitted. When the connection cannot keep up, the server queue fills and the newest datagrams are dropped as `queue_full`.
 - **macOS limits outgoing datagram size.** macOS caps a UDP datagram at the `net.inet.udp.maxdgram` sysctl, which is 9216 bytes by default. A client on macOS cannot send a larger payload and counts it as `write_error`. Raise the limit with `sudo sysctl -w net.inet.udp.maxdgram=65535` if the tunnel carries larger datagrams.
@@ -374,4 +389,4 @@ The code is organized as follows:
 | `internal/tunnel` | Wire protocol, TCP/TLS, QUIC and KCP transports, client |
 | `internal/stats` | Counters and stats logging |
 
-The transport is defined by the `Session`, `Listener` and `Dialer` interfaces in `internal/tunnel/transport.go`, so a transport can be added without changing the server and client logic. TCP, KCP and QUIC share the handshake in `handshake.go`; TCP and KCP also share the stream session in `session.go`.
+The transport is defined by the `Session`, `Listener` and `Dialer` interfaces in `internal/tunnel/transport.go`, so a transport can be added without changing the server and client logic. TCP, KCP and QUIC share the handshake in `handshake.go` and the codecs in `compress.go`; TCP and KCP also share the stream session in `session.go`.

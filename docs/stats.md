@@ -60,6 +60,32 @@ Some losses are not counted:
 - IPv4 fragments after the first, and all IPv6 fragments, are rejected by the kernel filter in `afpacket` mode.
 - In `socket` mode, datagrams that the kernel drops because a socket receive buffer is full never reach the server.
 
+## Compression stats
+
+When `compression` is `zstd` or `s2`, each report has one more line per server or per client upstream, after the `global drops` lines. It is absent when compression is `none`.
+
+```text
+2026-11-05T10:12:20.114-0500	INFO	compression stats	{"side": "client", "upstream": "east", "transport": "quic", "algorithm": "zstd", "tx_bytes_in": 0, "tx_bytes_out": 0, "tx_ratio": 0, "tx_raw_frames": 0, "rx_bytes_in": 412873, "rx_bytes_out": 1316640, "rx_ratio": 3.19, "rx_decompress_errors": 0, "rx_oversized": 0}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `side`, `upstream`, `transport` | As in the other lines. `upstream` is absent on the server. |
+| `algorithm` | `zstd` or `s2` |
+| `tx_bytes_in` | UDP payload bytes this side sent, before compression |
+| `tx_bytes_out` | Bytes of those payloads on the wire, after compression. Raw payloads count the same in both fields. Frame headers are not included. |
+| `tx_ratio` | `tx_bytes_in` divided by `tx_bytes_out`, rounded to two decimals. `3.19` means the wire carried about a third of the original bytes. `0` before any traffic. |
+| `tx_raw_frames` | Payloads sent uncompressed because they were shorter than 16 bytes or compression did not make them smaller |
+| `rx_bytes_in` | Payload bytes received, as they arrived on the wire |
+| `rx_bytes_out` | The same payloads after decompression |
+| `rx_ratio` | `rx_bytes_out` divided by `rx_bytes_in` |
+| `rx_decompress_errors` | Frames dropped because they could not be decoded |
+| `rx_oversized` | Frames dropped because they would expand beyond 65535 bytes (a decompression bomb) |
+
+All values are cumulative since startup. The server's data flows to the client, so on a healthy tunnel the server shows `tx_*` and the client `rx_*`; the other direction stays at 0. The server `packets` and `bytes` fields of `channel stats` still count original payload bytes. Frames dropped for `rx_decompress_errors` and `rx_oversized` are not counted in the per-channel drop counters.
+
+A low `tx_ratio` close to 1 with a high `tx_raw_frames` means the data does not compress; set `compression: none` to save CPU. A non-zero `rx_decompress_errors` on a session that worked before points at corruption, for example a KCP session without `kcp.key` crossing a device that rewrites packets.
+
 ## Reading the counters
 
 When no client is connected, the server counts every matching datagram as `no_client`. This server report was taken while a client failed to authenticate; one datagram arrived on channel 1 and one datagram on port 5001 came from a source port that no channel accepts:

@@ -70,6 +70,39 @@ Errors:
 - `tls: must be enabled for transport "quic"`
 - `tls: not supported with transport "kcp"; set kcp.key to encrypt`
 
+### compression
+
+Payload compression for the datagrams that the server sends. The client must use the same algorithm; otherwise the handshake fails (see [protocol.md](protocol.md#compression)).
+
+Two forms are accepted:
+
+```yaml
+compression: zstd                  # shorthand: algorithm with the default level
+compression:
+  algorithm: zstd
+  level: 1
+```
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `algorithm` | string | `none` | `none`, `zstd` or `s2` |
+| `level` | integer | `1` | Compression level. `zstd`: 1 fastest, 2 default, 3 better, 4 best. `s2`: 1 standard, 2 better, 3 best. Not allowed with `none`. |
+
+- Default: `none`. The wire format is then identical to v0.2.0, so a v0.2.0 server or client interoperates with it.
+- `zstd` is [klauspost/compress/zstd](https://github.com/klauspost/compress/tree/master/zstd). It gives the best ratio. Level 1 costs little CPU and is the right default.
+- `s2` is [klauspost/compress/s2](https://github.com/klauspost/compress/tree/master/s2), a faster, Snappy-compatible codec with a lower ratio. Choose it when CPU or latency matters more than bandwidth.
+- Each datagram is compressed on its own, so very small or random payloads gain nothing. A payload shorter than 16 bytes, or one that does not get smaller, is sent as it is and counted as `tx_raw_frames` in the [stats](stats.md#compression-stats).
+- `level` only affects the sender. The receiver decodes any level of the same algorithm.
+- It works with every `transport`. With `quic`, compression also lets larger payloads fit into a datagram.
+
+Errors:
+
+- `compression: algorithm "<value>" must be "none", "zstd" or "s2"`
+- `compression: level for zstd must be between 1 and 4`
+- `compression: level for s2 must be between 1 and 3`
+- `compression: level is not used with algorithm "none"`
+- `field <name> not found in compression`, for an unknown key in the mapping
+
 ### capture
 
 How the server obtains UDP datagrams. [capture-modes.md](capture-modes.md) describes both modes.
@@ -208,7 +241,7 @@ The client accepts two mutually exclusive shapes:
 1. **Single upstream.** Set top-level `server` and `channels`. `Normalize` turns this into one upstream named `default`.
 2. **Multiple upstreams.** Set `upstreams` to a non-empty list. Do not set top-level `server` or `channels`.
 
-Top-level `transport`, `token`, `tls`, `kcp`, `reconnect_backoff_min` and `reconnect_backoff_max` are shared defaults. In the multi-upstream shape, an upstream that omits one of them inherits the top-level value. `stats_interval` is always top-level.
+Top-level `transport`, `compression`, `token`, `tls`, `kcp`, `reconnect_backoff_min` and `reconnect_backoff_max` are shared defaults. In the multi-upstream shape, an upstream that omits one of them inherits the top-level value. `stats_interval` is always top-level.
 
 Mutual-exclusion errors:
 
@@ -228,6 +261,20 @@ Address of the server. Used only in the single-upstream shape.
 Transport used to reach the server: `tcp` (default), `quic` or `kcp`, as described under the [server key](#transport). In the single-upstream shape it applies to the one upstream. In the multi-upstream shape it is the default for upstreams that omit `transport`, so one client can mix transports. Reconnect and backoff behave the same for all of them.
 
 Errors, with `upstreams[<i>]: ` in front: `transport: "<value>" must be "tcp", "quic" or "kcp"`, `tls: must be enabled for transport "quic"`, `tls: not supported with transport "kcp"; set kcp.key to encrypt`.
+
+### compression
+
+Compression for the datagrams received from the server: `none` (default), `zstd` or `s2`, with the same two forms and the same `level` as the [server key](#compression). It must equal the `compression` of the server that the upstream dials. In the single-upstream shape it applies to the one upstream. In the multi-upstream shape it is the default for upstreams that omit `compression`; an upstream can set `compression: none` to turn it off, or its own algorithm and level. Errors carry the prefix `upstreams[<i>]: `.
+
+When the settings differ, the client logs the mismatch and retries with its backoff:
+
+| Situation | Client error |
+| --- | --- |
+| Client compresses, server uses another algorithm | `tunnel: compression mismatch between client and server: client uses zstd, server uses none` |
+| Client uses `none`, server compresses | `tunnel: compression mismatch between client and server: client uses none, server requires another setting` |
+| Client compresses, server is v0.2.0 or older | `tunnel: server does not support compression (protocol version 1)` |
+
+The server logs `handshake rejected` with `status` 4, `client_compression` and `server_compression`.
 
 ### reconnect_backoff_min and reconnect_backoff_max
 
@@ -303,6 +350,7 @@ List of tunnel servers to dial in parallel. Required for the multi-upstream shap
 | `name` | string | none | Unique label for logs and stats (`upstream=<name>`). Required. |
 | `server` | `host:port` | none | Address of that tunnel server. Required. |
 | `transport` | string | top-level `transport` | `tcp`, `quic` or `kcp` |
+| `compression` | string or object | top-level `compression` | `none`, `zstd` or `s2`, optionally with `level` |
 | `token` | string | top-level `token` | Handshake token for this upstream |
 | `tls` | object | top-level `tls` | TLS settings for this upstream. Omit the key to inherit (not inherited by `kcp` upstreams). |
 | `kcp` | object | top-level `kcp` | KCP settings for this upstream. Omit the key to inherit. |
@@ -323,7 +371,7 @@ Errors, where `<i>` is the upstream index and `<j>` a channel index:
 
 ## Examples
 
-A client that mixes transports. `east` uses QUIC with the shared TLS block, `west` uses KCP and does not inherit that block, and `lab` stays on TCP:
+A client that mixes transports and compression. `east` uses QUIC with the shared TLS block and zstd, `west` uses KCP with s2 and does not inherit that TLS block, and `lab` stays on TCP without compression:
 
 ```yaml
 token: change-me
@@ -335,10 +383,12 @@ kcp:
 upstreams:
   - name: east
     transport: quic
+    compression: zstd              # must match east's server
     server: "192.168.1.10:9000"
     channels: [{id: 1, target: "127.0.0.1:2368"}]
   - name: west
     transport: kcp
+    compression: {algorithm: s2, level: 2}
     server: "192.168.1.11:9000"
     channels: [{id: 1, target: "127.0.0.1:2369"}]
   - name: lab
@@ -348,4 +398,4 @@ upstreams:
 
 ## Example files
 
-[examples/server.yaml](../examples/server.yaml), [examples/client.yaml](../examples/client.yaml) and [examples/client-multi.yaml](../examples/client-multi.yaml) are complete commented configurations for TCP. [examples/server-quic.yaml](../examples/server-quic.yaml) and [examples/client-quic.yaml](../examples/client-quic.yaml) use QUIC; [examples/server-kcp.yaml](../examples/server-kcp.yaml) and [examples/client-kcp.yaml](../examples/client-kcp.yaml) use KCP. Release archives include the matching example files next to each binary.
+[examples/server.yaml](../examples/server.yaml), [examples/client.yaml](../examples/client.yaml) and [examples/client-multi.yaml](../examples/client-multi.yaml) are complete commented configurations for TCP. [examples/server-quic.yaml](../examples/server-quic.yaml) and [examples/client-quic.yaml](../examples/client-quic.yaml) use QUIC; [examples/server-kcp.yaml](../examples/server-kcp.yaml) and [examples/client-kcp.yaml](../examples/client-kcp.yaml) use KCP. The QUIC examples enable `zstd` and the KCP examples enable `s2`; the TCP examples show `compression: none` as a comment. Release archives include the matching example files next to each binary.
