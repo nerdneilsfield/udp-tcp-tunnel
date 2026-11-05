@@ -1,0 +1,135 @@
+# udp-tcp-tunnel-client: one process, several upstreams, mixed transports and
+# compression. Run: udp-tcp-tunnel-client -c client-full.yaml
+# Do not set top-level `server` or `channels` together with `upstreams`.
+# Every key is described in
+# https://github.com/nerdneilsfield/udp-tcp-tunnel/blob/master/docs/configuration.md
+#
+# This file is a reference, not a copy-paste for production. Change every
+# address, token, key and certificate path. Open TCP for the TCP upstream and
+# UDP for the QUIC and KCP upstreams.
+
+# Shared defaults. An upstream inherits transport, compression, token, tls,
+# kcp and reconnect backoff when it omits them. stats_interval is top-level
+# only. Per-upstream overrides are shown below so each server can differ.
+reconnect_backoff_min: 1s
+reconnect_backoff_max: 30s
+stats_interval: 10s
+
+# Default transport and compression for upstreams that omit those keys.
+# tcp is the historical default; none means "do not compress".
+transport: tcp
+compression: none
+token: change-me
+
+# Top-level TLS is the default for TCP and QUIC upstreams that omit `tls`.
+# A KCP upstream never inherits an enabled TLS block.
+tls:
+  enabled: false
+  # ca_file: /etc/udp-tcp-tunnel/ca.crt
+  # server_name: tunnel.example.com
+  # insecure_skip_verify: false
+
+# Top-level KCP defaults for upstreams that use transport: kcp and omit `kcp`.
+# Without a key, the token and payloads cross the network in clear text.
+kcp:
+  key: ""
+  nodelay: true
+  interval: 20ms
+  resend: 2
+  no_congestion: true
+  send_window: 1024
+  recv_window: 1024
+  mtu: 1350
+  data_shards: 0
+  parity_shards: 0
+
+upstreams:
+  # Classic TCP, no compression. Matches a server that still runs the
+  # v0.2.0-style plain TCP listen.
+  - name: tcp-plain
+    server: "192.168.1.10:9000"
+    transport: tcp
+    compression: none
+    token: change-me
+    channels:
+      - id: 1
+        name: lidar-201
+        target: "127.0.0.1:2368"
+      - id: 2
+        name: lidar-202
+        target: "127.0.0.1:2369"
+
+  # TCP with TLS and zstd. The server must enable the same TLS and compression.
+  - name: tcp-tls-zstd
+    server: "192.168.1.11:9000"
+    transport: tcp
+    compression:
+      algorithm: zstd
+      level: 1
+    token: other-secret
+    tls:
+      enabled: true
+      ca_file: /etc/udp-tcp-tunnel/ca.crt
+      server_name: tcp-tls.example.com
+    channels:
+      - id: 1
+        name: camera-1
+        target: "127.0.0.1:5000"
+
+  # QUIC. TLS is mandatory. Open the server port for UDP. Large payloads that
+  # do not fit in a DATAGRAM fall back to the stream and may reorder.
+  - name: quic-zstd
+    server: "192.168.1.12:9000"
+    transport: quic
+    compression:
+      algorithm: zstd
+      level: 1
+    token: change-me
+    tls:
+      enabled: true
+      ca_file: /etc/udp-tcp-tunnel/ca.crt
+      server_name: quic.example.com
+    channels:
+      - id: 1
+        name: lidar-301
+        target: "127.0.0.1:2370"
+      - id: 2
+        name: lidar-302
+        target: "127.0.0.1:2371"
+
+  # KCP with optional AES key and s2 compression. Open the server port for UDP.
+  # kcp.key, data_shards and parity_shards must match that server.
+  - name: kcp-s2
+    server: "192.168.1.13:9000"
+    transport: kcp
+    compression:
+      algorithm: s2
+      level: 1
+    token: change-me
+    kcp:
+      key: change-me-too
+      nodelay: true
+      interval: 20ms
+      resend: 2
+      no_congestion: true
+      send_window: 1024
+      recv_window: 1024
+      mtu: 1350
+      data_shards: 0
+      parity_shards: 0
+    channels:
+      - id: 1
+        name: radar-1
+        target: "127.0.0.1:6000"
+
+  # Second KCP peer that inherits the top-level kcp block and uses no
+  # compression. Channel id 1 is fine: IDs are unique per upstream only.
+  - name: kcp-plain
+    server: "192.168.1.14:9000"
+    transport: kcp
+    compression: none
+    token: change-me
+    channels:
+      - id: 1
+        name: aux-1
+        target: "127.0.0.1:7000"

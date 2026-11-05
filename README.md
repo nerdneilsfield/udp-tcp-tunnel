@@ -43,7 +43,7 @@ Download archives from the [releases page](https://github.com/nerdneilsfield/udp
 | Client | Linux and macOS on amd64 and arm64 | `udp-tcp-tunnel-client_<version>_<os>_<arch>.tar.gz` |
 | Client | Windows on amd64 and arm64 | `udp-tcp-tunnel-client_<version>_windows_<arch>.zip` |
 
-Each archive contains the binary, `README.md`, `LICENSE` and example configuration files at the top level (`server.yaml` for the server; `client.yaml` and `client-multi.yaml` for the client). Every release also has a `checksums.txt` file with SHA-256 checksums.
+Each archive contains the binary, `README.md`, `LICENSE` and example configuration files at the top level (`server.yaml`, `server-quic.yaml` and `server-kcp.yaml` for the server; `client.yaml`, `client-multi.yaml`, `client-quic.yaml`, `client-kcp.yaml` and `client-full.yaml` for the client). Every release also has a `checksums.txt` file with SHA-256 checksums.
 
 The following commands install v0.1.0 of both binaries on Linux amd64:
 
@@ -322,7 +322,7 @@ Client (`client.yaml`):
 | `compression` | `none` | Default `none`, `zstd` or `s2`; upstreams may override |
 | `channels` | none | Channels for the single-upstream shape |
 
-Use [examples/client-multi.yaml](examples/client-multi.yaml) when one process should dial several servers. Channel IDs are unique per upstream only.
+Use [examples/client-multi.yaml](examples/client-multi.yaml) when one process should dial several servers. Channel IDs are unique per upstream only. For a single reference that mixes TCP, QUIC, KCP and compression across five upstreams, see [examples/client-full.yaml](examples/client-full.yaml).
 
 Unknown keys are rejected, so a misspelled key stops the program at startup.
 

@@ -66,6 +66,8 @@ archives:
         dst: client-quic.yaml
       - src: examples/client-kcp.yaml
         dst: client-kcp.yaml
+      - src: examples/client-full.yaml
+        dst: client-full.yaml
 
 checksum:
   name_template: checksums.txt
