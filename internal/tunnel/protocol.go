@@ -239,7 +239,7 @@ func ReadReplyAlgo(r io.Reader) (Algo, bool, error) {
 	}
 	version, status := b[len(Magic)], Status(b[len(Magic)+1])
 	var algo Algo
-	v2 := version == VersionCompression && (status == StatusOK || status == StatusCompressionMismatch)
+	v2 := version == VersionCompression
 	if v2 {
 		var a [1]byte
 		if _, err := io.ReadFull(r, a[:]); err != nil {
