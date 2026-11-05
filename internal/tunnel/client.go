@@ -44,15 +44,20 @@ func NewClient(cfg config.Client, log *zap.Logger) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	reg := stats.New("client", log)
 	upstreams := make([]upstreamRuntime, 0, len(cfg.Upstreams))
 	for _, u := range cfg.Upstreams {
-		d, err := NewDialer(u)
+		var cs *stats.CompressionCounters
+		if u.Compression != nil {
+			cs = reg.SetCompression(u.Name, u.Compression.Algorithm)
+		}
+		d, err := NewDialer(u, cs)
 		if err != nil {
 			return nil, fmt.Errorf("upstream %q: %w", u.Name, err)
 		}
 		upstreams = append(upstreams, upstreamRuntime{cfg: u, dialer: d})
 	}
-	return newClient(cfg, upstreams, log), nil
+	return newClient(cfg, upstreams, log, reg), nil
 }
 
 // NewClientWithDialer builds a single-upstream client over any transport.
@@ -68,7 +73,7 @@ func NewClientWithDialer(cfg config.Client, dialer Dialer, log *zap.Logger) (*Cl
 	if len(cfg.Upstreams) != 1 {
 		return nil, fmt.Errorf("NewClientWithDialer requires exactly one upstream, got %d", len(cfg.Upstreams))
 	}
-	return newClient(cfg, []upstreamRuntime{{cfg: cfg.Upstreams[0], dialer: dialer}}, log), nil
+	return newClient(cfg, []upstreamRuntime{{cfg: cfg.Upstreams[0], dialer: dialer}}, log, nil), nil
 }
 
 // NewClientWithDialers builds a client over the provided dialers, keyed by
@@ -89,11 +94,14 @@ func NewClientWithDialers(cfg config.Client, dialers map[string]Dialer, log *zap
 		}
 		upstreams = append(upstreams, upstreamRuntime{cfg: u, dialer: d})
 	}
-	return newClient(cfg, upstreams, log), nil
+	return newClient(cfg, upstreams, log, nil), nil
 }
 
-func newClient(cfg config.Client, upstreams []upstreamRuntime, log *zap.Logger) *Client {
-	reg := stats.New("client", log)
+// newClient wires the stats. reg may be nil, in which case a new registry is created.
+func newClient(cfg config.Client, upstreams []upstreamRuntime, log *zap.Logger, reg *stats.Registry) *Client {
+	if reg == nil {
+		reg = stats.New("client", log)
+	}
 	for _, u := range upstreams {
 		reg.SetTransport(u.cfg.Name, u.cfg.Transport)
 		for _, ch := range u.cfg.Channels {

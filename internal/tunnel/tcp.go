@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/config"
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/stats"
 )
 
 const (
@@ -51,6 +54,9 @@ type TCPServerOptions struct {
 	Channels []uint16
 	TLS      *tls.Config // nil for plain TCP
 	Log      *zap.Logger
+
+	Compression config.Compression
+	CompStats   *stats.CompressionCounters // optional
 }
 
 // TCPListener is the server side of the TCP transport.
@@ -59,6 +65,7 @@ type TCPListener struct {
 	ln    net.Listener
 	opts  TCPServerOptions
 	known map[uint16]struct{}
+	comp  *Compressor
 }
 
 // ListenTCP starts listening and performing handshakes in the background.
@@ -71,11 +78,17 @@ func ListenTCP(addr string, opts TCPServerOptions) (*TCPListener, error) {
 	if opts.Log == nil {
 		opts.Log = zap.NewNop()
 	}
+	comp, err := NewCompressor(opts.Compression, opts.CompStats)
+	if err != nil {
+		_ = ln.Close()
+		return nil, err
+	}
 	l := &TCPListener{
 		baseListener: newBaseListener(ln.Addr().String(), ln.Close),
 		ln:           ln,
 		opts:         opts,
 		known:        knownChannels(opts.Channels),
+		comp:         comp,
 	}
 	go l.acceptLoop()
 	return l, nil
@@ -117,12 +130,12 @@ func (l *TCPListener) handshake(raw net.Conn) {
 	log := l.opts.Log.With(zap.String("remote", raw.RemoteAddr().String()))
 
 	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
-	if err := serverHandshake(conn, l.opts.Token, l.known, log); err != nil {
+	if err := serverHandshake(conn, l.opts.Token, l.known, l.comp.Algo(), log); err != nil {
 		_ = conn.Close()
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
-	l.deliver(newConnSession(conn, 0))
+	l.deliver(newConnSession(conn, 0, l.comp))
 }
 
 // TCPDialerOptions configures a TCP dialer.
@@ -132,21 +145,32 @@ type TCPDialerOptions struct {
 	Channels []uint16
 	TLS      *tls.Config // nil for plain TCP
 	Timeout  time.Duration
+
+	Compression config.Compression
+	CompStats   *stats.CompressionCounters // optional
 }
 
 // TCPDialer is the client side of the TCP transport.
-type TCPDialer struct{ opts TCPDialerOptions }
+type TCPDialer struct {
+	opts TCPDialerOptions
+	comp *Compressor
+	err  error // compression setup error, reported by Dial
+}
 
 // NewTCPDialer returns a Dialer for the given options.
 func NewTCPDialer(opts TCPDialerOptions) *TCPDialer {
 	if opts.Timeout == 0 {
 		opts.Timeout = handshakeTimeout
 	}
-	return &TCPDialer{opts: opts}
+	comp, err := NewCompressor(opts.Compression, opts.CompStats)
+	return &TCPDialer{opts: opts, comp: comp, err: err}
 }
 
 // Dial connects, optionally upgrades to TLS and performs the handshake.
 func (d *TCPDialer) Dial(ctx context.Context) (Session, error) {
+	if d.err != nil {
+		return nil, d.err
+	}
 	nd := net.Dialer{Timeout: d.opts.Timeout, KeepAliveConfig: keepAliveConfig()}
 	raw, err := nd.DialContext(ctx, "tcp", d.opts.Addr)
 	if err != nil {
@@ -159,10 +183,10 @@ func (d *TCPDialer) Dial(ctx context.Context) (Session, error) {
 		conn = tls.Client(raw, d.opts.TLS)
 	}
 	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
-	if err := clientHandshake(conn, Hello{Token: d.opts.Token, Channels: d.opts.Channels}); err != nil {
+	if err := clientHandshake(conn, Hello{Token: d.opts.Token, Channels: d.opts.Channels, Compression: d.comp.Algo()}); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return newConnSession(conn, 0), nil
+	return newConnSession(conn, 0, d.comp), nil
 }

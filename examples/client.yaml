@@ -17,6 +17,10 @@ reconnect_backoff_max: 30s
 # Interval between stats log lines, as a Go duration. Default 10s.
 stats_interval: 10s
 
+# Payload compression: none (default), zstd or s2. The other end must use the
+# same value, or the handshake fails. Details in docs/configuration.md.
+# compression: none
+
 # Must equal the server's token.
 token: change-me
 

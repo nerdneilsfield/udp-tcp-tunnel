@@ -142,3 +142,44 @@ func TestTransportLabel(t *testing.T) {
 		t.Fatalf("got %d east and %d west lines, want 2 each", withLabel, without)
 	}
 }
+
+func TestCompressionStatsLine(t *testing.T) {
+	core, logs := observer.New(zap.InfoLevel)
+	reg := New("client", zap.New(core))
+	reg.SetTransport("east", "kcp")
+	if reg.SetCompression("west", "none") != nil {
+		t.Fatal("none must not create counters")
+	}
+	cs := reg.SetCompression("east", "zstd")
+	cs.AddTx(1000, 250, false)
+	cs.AddTx(100, 100, true)
+	cs.AddRx(500, 1000)
+	cs.RxError()
+	cs.RxOversized()
+	cs.RxOversized()
+	var nilCounters *CompressionCounters
+	nilCounters.AddTx(1, 1, false) // must not panic: compression off
+
+	reg.Log(time.Now())
+	var found []map[string]any
+	for _, e := range logs.All() {
+		if e.Message == "compression stats" {
+			found = append(found, e.ContextMap())
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("got %d compression lines, want 1", len(found))
+	}
+	f := found[0]
+	want := map[string]any{
+		"side": "client", "upstream": "east", "transport": "kcp", "algorithm": "zstd",
+		"tx_bytes_in": int64(1100), "tx_bytes_out": int64(350), "tx_ratio": 3.14, "tx_raw_frames": int64(1),
+		"rx_bytes_in": int64(500), "rx_bytes_out": int64(1000), "rx_ratio": 2.0,
+		"rx_decompress_errors": int64(1), "rx_oversized": int64(2),
+	}
+	for k, v := range want {
+		if fmt.Sprint(f[k]) != fmt.Sprint(v) {
+			t.Fatalf("%s = %v, want %v (line %v)", k, f[k], v, f)
+		}
+	}
+}

@@ -9,6 +9,10 @@
 reconnect_backoff_min: 1s
 reconnect_backoff_max: 30s
 stats_interval: 10s
+
+# Each upstream may set its own `compression` (none, zstd or s2); it must match
+# that server. An upstream that omits it inherits this value.
+# compression: none
 token: change-me
 
 # tls:

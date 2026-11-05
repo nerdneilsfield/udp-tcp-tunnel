@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/gopacket/gopacket v1.7.5
+	github.com/klauspost/compress v1.20.3
 	github.com/quic-go/quic-go v0.65.0
 	github.com/spf13/cobra v1.10.2
 	github.com/xtaci/kcp-go/v5 v5.7.3

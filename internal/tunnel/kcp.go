@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/config"
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/stats"
 )
 
 const (
@@ -44,7 +45,7 @@ func kcpBlock(key string) (kcp.BlockCrypt, error) {
 // the session a plain byte stream, so the TCP framing runs on it unchanged.
 func tuneKCP(s *kcp.UDPSession, k config.KCP) {
 	k = k.Resolved()
-	s.SetStreamMode(true)
+	s.SetStreamMode(true) //nolint:staticcheck // deprecated, but the byte-stream framing needs it
 	s.SetWriteDelay(false)
 	s.SetACKNoDelay(true)
 	s.SetNoDelay(boolInt(*k.NoDelay), int(k.Interval/time.Millisecond), k.Resend, boolInt(*k.NoCongestion))
@@ -67,6 +68,9 @@ type KCPServerOptions struct {
 	Log      *zap.Logger
 	// Liveness overrides the 30s dead-peer timeout, for tests.
 	Liveness time.Duration
+
+	Compression config.Compression
+	CompStats   *stats.CompressionCounters // optional
 }
 
 // KCPListener is the server side of the KCP transport.
@@ -75,11 +79,16 @@ type KCPListener struct {
 	ln    *kcp.Listener
 	opts  KCPServerOptions
 	known map[uint16]struct{}
+	comp  *Compressor
 }
 
 // ListenKCP starts listening on a UDP port and handshaking in the background.
 func ListenKCP(addr string, opts KCPServerOptions) (*KCPListener, error) {
 	block, err := kcpBlock(opts.KCP.Key)
+	if err != nil {
+		return nil, err
+	}
+	comp, err := NewCompressor(opts.Compression, opts.CompStats)
 	if err != nil {
 		return nil, err
 	}
@@ -101,6 +110,7 @@ func ListenKCP(addr string, opts KCPServerOptions) (*KCPListener, error) {
 		ln:           ln,
 		opts:         opts,
 		known:        knownChannels(opts.Channels),
+		comp:         comp,
 	}
 	go l.acceptLoop()
 	return l, nil
@@ -132,7 +142,7 @@ func (l *KCPListener) handshake(sess *kcp.UDPSession) {
 	log := l.opts.Log.With(zap.String("remote", sess.RemoteAddr().String()))
 
 	_ = sess.SetDeadline(time.Now().Add(handshakeTimeout))
-	if err := serverHandshake(sess, l.opts.Token, l.known, log); err != nil {
+	if err := serverHandshake(sess, l.opts.Token, l.known, l.comp.Algo(), log); err != nil {
 		// Closing a KCP session drops unsent data, so keep it open until the
 		// reply has had time to be delivered and acknowledged.
 		_ = sess.SetReadDeadline(time.Now().Add(rejectLinger))
@@ -141,7 +151,7 @@ func (l *KCPListener) handshake(sess *kcp.UDPSession) {
 		return
 	}
 	_ = sess.SetDeadline(time.Time{})
-	l.deliver(newConnSession(sess, l.opts.Liveness))
+	l.deliver(newConnSession(sess, l.opts.Liveness, l.comp))
 }
 
 // KCPDialerOptions configures a KCP dialer.
@@ -152,22 +162,33 @@ type KCPDialerOptions struct {
 	KCP      config.KCP
 	// Liveness overrides the 30s dead-peer timeout, for tests.
 	Liveness time.Duration
+
+	Compression config.Compression
+	CompStats   *stats.CompressionCounters // optional
 }
 
 // KCPDialer is the client side of the KCP transport.
-type KCPDialer struct{ opts KCPDialerOptions }
+type KCPDialer struct {
+	opts KCPDialerOptions
+	comp *Compressor
+	err  error // compression setup error, reported by Dial
+}
 
 // NewKCPDialer returns a Dialer for the given options.
 func NewKCPDialer(opts KCPDialerOptions) *KCPDialer {
 	if opts.Liveness == 0 {
 		opts.Liveness = livenessTimeout
 	}
-	return &KCPDialer{opts: opts}
+	comp, err := NewCompressor(opts.Compression, opts.CompStats)
+	return &KCPDialer{opts: opts, comp: comp, err: err}
 }
 
 // Dial opens a KCP session and performs the handshake. KCP has no connect
 // step, so an absent server shows up as a handshake timeout.
 func (d *KCPDialer) Dial(ctx context.Context) (Session, error) {
+	if d.err != nil {
+		return nil, d.err
+	}
 	block, err := kcpBlock(d.opts.KCP.Key)
 	if err != nil {
 		return nil, err
@@ -183,7 +204,7 @@ func (d *KCPDialer) Dial(ctx context.Context) (Session, error) {
 
 	stop := context.AfterFunc(ctx, func() { _ = sess.Close() })
 	_ = sess.SetDeadline(time.Now().Add(handshakeTimeout))
-	err = clientHandshake(sess, Hello{Token: d.opts.Token, Channels: d.opts.Channels})
+	err = clientHandshake(sess, Hello{Token: d.opts.Token, Channels: d.opts.Channels, Compression: d.comp.Algo()})
 	if !stop() || err != nil {
 		_ = sess.Close()
 		if ctx.Err() != nil {
@@ -195,5 +216,5 @@ func (d *KCPDialer) Dial(ctx context.Context) (Session, error) {
 		return nil, err
 	}
 	_ = sess.SetDeadline(time.Time{})
-	return newConnSession(sess, d.opts.Liveness), nil
+	return newConnSession(sess, d.opts.Liveness, d.comp), nil
 }

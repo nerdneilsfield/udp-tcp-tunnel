@@ -112,18 +112,22 @@ type Registry struct {
 	globals     map[string]*Counters
 	globalOrder []string
 	transports  map[string]string
-	last        time.Time
+
+	compression      map[string]*compressionEntry
+	compressionOrder []string
+	last             time.Time
 }
 
 // New builds a registry. side is "server" or "client" and appears in logs.
 func New(side string, log *zap.Logger) *Registry {
 	return &Registry{
-		side:       side,
-		log:        log,
-		channels:   make(map[channelKey]*channel),
-		globals:    make(map[string]*Counters),
-		transports: make(map[string]string),
-		last:       time.Now(),
+		side:        side,
+		log:         log,
+		channels:    make(map[channelKey]*channel),
+		globals:     make(map[string]*Counters),
+		transports:  make(map[string]string),
+		compression: make(map[string]*compressionEntry),
+		last:        time.Now(),
 	}
 }
 
@@ -251,6 +255,7 @@ func (r *Registry) Log(now time.Time) {
 		}
 		r.log.Info("global drops", append(fields, dropFields(g)...)...)
 	}
+	r.logCompression()
 }
 
 func dropFields(s Snapshot) []zap.Field {

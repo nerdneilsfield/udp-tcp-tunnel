@@ -104,18 +104,22 @@ func TestEndToEnd(t *testing.T) {
 		name      string
 		transport string
 		tls       bool
+		comp      string
 	}{
-		{"tcp", config.TransportTCP, false},
-		{"tcp+tls", config.TransportTCP, true},
-		{"quic", config.TransportQUIC, true},
-		{"kcp", config.TransportKCP, false},
+		{"tcp", config.TransportTCP, false, ""},
+		{"tcp+tls", config.TransportTCP, true, ""},
+		{"quic", config.TransportQUIC, true, ""},
+		{"kcp", config.TransportKCP, false, ""},
+		{"tcp+zstd", config.TransportTCP, false, config.CompressionZstd},
+		{"quic+zstd", config.TransportQUIC, true, config.CompressionZstd},
+		{"kcp+s2", config.TransportKCP, false, config.CompressionS2},
 	}
 	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) { runEndToEnd(t, c.transport, c.tls) })
+		t.Run(c.name, func(t *testing.T) { runEndToEnd(t, c.transport, c.tls, c.comp) })
 	}
 }
 
-func runEndToEnd(t *testing.T, transport string, useTLS bool) {
+func runEndToEnd(t *testing.T, transport string, useTLS bool, compression string) {
 	port1, port2 := freeUDPPort(t), freeUDPPort(t)
 	target1, target2 := listenTarget(t), listenTarget(t)
 
@@ -130,6 +134,7 @@ func runEndToEnd(t *testing.T, transport string, useTLS bool) {
 			{ID: 2, Name: "lidar-2", DestinationPort: port2},
 		},
 	}
+	srvCfg.Compression = config.Compression{Algorithm: compression}
 	srvCfg.SetDefaults()
 	srvCfg.StatsInterval = time.Hour
 
@@ -144,6 +149,7 @@ func runEndToEnd(t *testing.T, transport string, useTLS bool) {
 			{ID: 2, Name: "lidar-2", Target: target2.LocalAddr().String()},
 		},
 	}
+	cliCfg.Compression = config.Compression{Algorithm: compression}
 	cliCfg.SetDefaults()
 
 	if useTLS {
@@ -234,6 +240,17 @@ func runEndToEnd(t *testing.T, transport string, useTLS bool) {
 	})
 	if d := srv.Stats().Channel(1).Drops(stats.QueueFull); d != 0 {
 		t.Fatalf("unexpected queue drops: %d", d)
+	}
+
+	if compression != "" {
+		tx := srv.Stats().Compression("").Snapshot()
+		rx := client.Stats().Compression(config.DefaultUpstreamName).Snapshot()
+		if tx.TxIn == 0 || tx.TxOut >= tx.TxIn {
+			t.Fatalf("server did not compress: %+v", tx)
+		}
+		if rx.RxOut != tx.TxIn || rx.RxIn != tx.TxOut || rx.RxErrors != 0 || rx.RxBombs != 0 {
+			t.Fatalf("client rx %+v does not match server tx %+v", rx, tx)
+		}
 	}
 
 	cancel()

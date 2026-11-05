@@ -73,6 +73,7 @@ func New(cfg config.Server, log *zap.Logger, opts ...Option) *Server {
 		ready:    make(chan struct{}),
 	}
 	s.stats.SetTransport("", cfg.Transport)
+	s.stats.SetCompression("", cfg.Compression.Resolved().Algorithm)
 	for _, ch := range cfg.Channels {
 		s.channels[ch.ID] = s.stats.AddChannel(ch.ID, ch.Name)
 	}
@@ -124,6 +125,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.log.Info("server started",
 		zap.String("listen", s.listener.Addr()),
 		zap.String("transport", s.cfg.Transport),
+		zap.String("compression", s.cfg.Compression.Resolved().Algorithm),
 		zap.String("capture", s.cfg.Capture),
 		zap.Int("channels", len(s.cfg.Channels)))
 
@@ -147,7 +149,7 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) listen() (tunnel.Listener, error) {
-	l, err := tunnel.Listen(s.cfg, s.log)
+	l, err := tunnel.Listen(s.cfg, s.log, s.stats.Compression(""))
 	if err != nil {
 		return nil, fmt.Errorf("listen %s (%s): %w", s.cfg.Listen, s.cfg.Transport, err)
 	}

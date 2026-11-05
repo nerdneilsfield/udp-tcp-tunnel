@@ -25,9 +25,11 @@ type connSession struct {
 	conn     net.Conn
 	r        *bufio.Reader
 	liveness time.Duration
+	comp     *Compressor // nil: compression not negotiated
 
 	wmu  sync.Mutex
 	wbuf []byte
+	cbuf []byte // compression scratch
 
 	watchdog *time.Timer // closes conn after liveness without a frame
 	expired  atomic.Bool
@@ -39,11 +41,12 @@ type connSession struct {
 // errPeerSilent is returned by Receive when the liveness timeout expires.
 var errPeerSilent = errors.New("tunnel: no frame from peer within the liveness timeout")
 
-func newConnSession(conn net.Conn, liveness time.Duration) *connSession {
+func newConnSession(conn net.Conn, liveness time.Duration, comp *Compressor) *connSession {
 	s := &connSession{
 		conn:     conn,
 		r:        bufio.NewReaderSize(conn, readBufferSize),
 		liveness: liveness,
+		comp:     comp,
 		done:     make(chan struct{}),
 	}
 	if liveness > 0 {
@@ -78,7 +81,14 @@ func (s *connSession) Send(channel uint16, payload []byte) error {
 	s.wmu.Lock()
 	defer s.wmu.Unlock()
 
-	buf, err := AppendFrame(s.wbuf[:0], channel, payload)
+	body, compressed := payload, false
+	if s.comp != nil && channel != HeartbeatChannel {
+		body, compressed = s.comp.Compress(s.cbuf, payload)
+		if compressed {
+			s.cbuf = body[:0]
+		}
+	}
+	buf, err := appendFrame(s.wbuf[:0], channel, compressed, body)
 	if err != nil {
 		return err
 	}
@@ -90,7 +100,7 @@ func (s *connSession) Send(channel uint16, payload []byte) error {
 
 func (s *connSession) Receive() (uint16, []byte, error) {
 	for {
-		ch, p, err := ReadFrame(s.r)
+		ch, compressed, p, err := readFrame(s.r)
 		if err != nil {
 			if s.expired.Load() {
 				err = errPeerSilent
@@ -100,8 +110,19 @@ func (s *connSession) Receive() (uint16, []byte, error) {
 		if s.watchdog != nil {
 			s.watchdog.Reset(s.liveness)
 		}
-		if ch != HeartbeatChannel {
+		if ch == HeartbeatChannel {
+			continue
+		}
+		if s.comp == nil {
+			if compressed {
+				return 0, nil, ErrCompressionMismatch
+			}
 			return ch, p, nil
+		}
+		// Frames are independent, so a bad one is dropped (and counted)
+		// without disturbing the following ones.
+		if out, derr := s.comp.Receive(compressed, p); derr == nil {
+			return ch, out, nil
 		}
 	}
 }

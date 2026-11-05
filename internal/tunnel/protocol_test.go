@@ -182,3 +182,73 @@ func TestReply(t *testing.T) {
 		t.Fatal("unknown status accepted")
 	}
 }
+
+func TestHelloCompressionWireFormat(t *testing.T) {
+	// Without compression the hello is the original version 1 bytes.
+	var b bytes.Buffer
+	must(t, WriteHello(&b, Hello{Channels: []uint16{1}}))
+	if got, want := b.Bytes(), []byte{0x55, 0x54, 0x54, 0x31, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01}; !bytes.Equal(got, want) {
+		t.Fatalf("v1 hello = % x, want % x", got, want)
+	}
+
+	// With compression it is version 2 plus one algorithm byte.
+	b.Reset()
+	must(t, WriteHello(&b, Hello{Token: "t", Channels: []uint16{1}, Compression: AlgoZstd}))
+	if got, want := b.Bytes(), []byte{0x55, 0x54, 0x54, 0x31, 0x02, 0x01, 't', 0x00, 0x01, 0x00, 0x01, 0x01}; !bytes.Equal(got, want) {
+		t.Fatalf("v2 hello = % x, want % x", got, want)
+	}
+	h, err := ReadHello(&b)
+	must(t, err)
+	if h.Version != VersionCompression || h.Compression != AlgoZstd || h.Token != "t" || len(h.Channels) != 1 {
+		t.Fatalf("parsed %+v", h)
+	}
+}
+
+func TestReplyAlgo(t *testing.T) {
+	var b bytes.Buffer
+	must(t, WriteReplyAlgo(&b, StatusOK, AlgoS2))
+	if got, want := b.Bytes(), []byte{0x55, 0x54, 0x54, 0x31, 0x02, 0x00, 0x02}; !bytes.Equal(got, want) {
+		t.Fatalf("v2 reply = % x, want % x", got, want)
+	}
+	algo, v2, err := ReadReplyAlgo(&b)
+	if err != nil || !v2 || algo != AlgoS2 {
+		t.Fatalf("got %v %v %v", algo, v2, err)
+	}
+
+	b.Reset()
+	must(t, WriteReplyAlgo(&b, StatusCompressionMismatch, AlgoNone))
+	if _, v2, err = ReadReplyAlgo(&b); !errors.Is(err, ErrCompressionMismatch) || !v2 {
+		t.Fatalf("mismatch reply: %v %v", v2, err)
+	}
+
+	// A version 1 reply is exactly the original six bytes and carries no algorithm.
+	b.Reset()
+	must(t, WriteReply(&b, StatusOK))
+	if b.Len() != 6 {
+		t.Fatalf("v1 reply is %d bytes", b.Len())
+	}
+	if _, v2, err = ReadReplyAlgo(&b); err != nil || v2 {
+		t.Fatalf("v1 reply: %v %v", v2, err)
+	}
+}
+
+func TestCompressedFrameFlag(t *testing.T) {
+	buf, err := appendFrame(nil, 3, true, []byte("abc"))
+	must(t, err)
+	if want := []byte{0, 3, 0x80, 0, 0, 3, 'a', 'b', 'c'}; !bytes.Equal(buf, want) {
+		t.Fatalf("frame = % x, want % x", buf, want)
+	}
+	ch, compressed, p, err := readFrame(bytes.NewReader(buf))
+	if err != nil || ch != 3 || !compressed || string(p) != "abc" {
+		t.Fatalf("readFrame: %d %v %q %v", ch, compressed, p, err)
+	}
+	// The plain reader refuses compressed frames; raw frames are unchanged.
+	if _, _, err = ReadFrame(bytes.NewReader(buf)); err == nil {
+		t.Fatal("ReadFrame accepted a compressed frame")
+	}
+	raw, err := AppendFrame(nil, 3, []byte("abc"))
+	must(t, err)
+	if want := []byte{0, 3, 0, 0, 0, 3, 'a', 'b', 'c'}; !bytes.Equal(raw, want) {
+		t.Fatalf("raw frame = % x", raw)
+	}
+}

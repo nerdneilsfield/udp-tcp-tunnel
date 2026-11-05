@@ -43,6 +43,20 @@ const (
 	TransportKCP  = "kcp"
 )
 
+// Compression algorithms.
+const (
+	CompressionNone = "none"
+	CompressionZstd = "zstd"
+	CompressionS2   = "s2"
+)
+
+// Compression levels: both codecs default to their fastest level.
+const (
+	DefaultCompressionLevel = 1
+	maxZstdLevel            = 4 // 1 fastest, 2 default, 3 better, 4 best
+	maxS2Level              = 3 // 1 standard, 2 better, 3 best
+)
+
 // KCP defaults. The tuning is the "fast" profile of kcp-go.
 const (
 	DefaultKCPInterval   = 20 * time.Millisecond
@@ -131,6 +145,74 @@ func (k KCP) validate(prefix string) []error {
 	return errs
 }
 
+// Compression selects payload compression. In YAML it is either a string
+// (the algorithm, with the default level) or a mapping with algorithm and level.
+type Compression struct {
+	Algorithm string `yaml:"algorithm"`
+	Level     int    `yaml:"level"`
+}
+
+// UnmarshalYAML accepts `compression: zstd` as shorthand for
+// `compression: {algorithm: zstd}` and rejects unknown keys in the mapping.
+func (c *Compression) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		var name string
+		if err := node.Decode(&name); err != nil {
+			return err
+		}
+		*c = Compression{Algorithm: name}
+		return nil
+	case yaml.MappingNode:
+		for i := 0; i < len(node.Content); i += 2 {
+			if key := node.Content[i].Value; key != "algorithm" && key != "level" {
+				return fmt.Errorf("line %d: field %s not found in compression", node.Content[i].Line, key)
+			}
+		}
+		type plain Compression
+		var p plain
+		if err := node.Decode(&p); err != nil {
+			return err
+		}
+		*c = Compression(p)
+		return nil
+	default:
+		return fmt.Errorf("line %d: compression must be a string or a mapping", node.Line)
+	}
+}
+
+// Resolved fills the defaults: algorithm none, and the fastest level.
+func (c Compression) Resolved() Compression {
+	if c.Algorithm == "" {
+		c.Algorithm = CompressionNone
+	}
+	if c.Algorithm != CompressionNone && c.Level == 0 {
+		c.Level = DefaultCompressionLevel
+	}
+	return c
+}
+
+func (c Compression) validate(prefix string) []error {
+	c = c.Resolved()
+	switch c.Algorithm {
+	case CompressionNone:
+		if c.Level != 0 {
+			return []error{fmt.Errorf("%scompression: level is not used with algorithm %q", prefix, CompressionNone)}
+		}
+	case CompressionZstd:
+		if c.Level < 1 || c.Level > maxZstdLevel {
+			return []error{fmt.Errorf("%scompression: level for zstd must be between 1 and %d", prefix, maxZstdLevel)}
+		}
+	case CompressionS2:
+		if c.Level < 1 || c.Level > maxS2Level {
+			return []error{fmt.Errorf("%scompression: level for s2 must be between 1 and %d", prefix, maxS2Level)}
+		}
+	default:
+		return []error{fmt.Errorf("%scompression: algorithm %q must be %q, %q or %q", prefix, c.Algorithm, CompressionNone, CompressionZstd, CompressionS2)}
+	}
+	return nil
+}
+
 // ServerTLS configures TLS on the tunnel listener.
 type ServerTLS struct {
 	Enabled  bool   `yaml:"enabled"`
@@ -168,6 +250,7 @@ type Upstream struct {
 	Name         string          `yaml:"name"`
 	Server       string          `yaml:"server"`
 	Transport    string          `yaml:"transport"`
+	Compression  *Compression    `yaml:"compression"`
 	Token        string          `yaml:"token"`
 	TLS          *ClientTLS      `yaml:"tls"`
 	KCP          *KCP            `yaml:"kcp"`
@@ -180,6 +263,7 @@ type Upstream struct {
 type Server struct {
 	Listen        string          `yaml:"listen"`
 	Transport     string          `yaml:"transport"`
+	Compression   Compression     `yaml:"compression"`
 	Capture       string          `yaml:"capture"`
 	UDPBind       string          `yaml:"udp_bind"`
 	Interface     string          `yaml:"interface"`
@@ -204,6 +288,7 @@ type Server struct {
 type Client struct {
 	Server        string          `yaml:"server"`
 	Transport     string          `yaml:"transport"`
+	Compression   Compression     `yaml:"compression"`
 	ReconnectMin  time.Duration   `yaml:"reconnect_backoff_min"`
 	ReconnectMax  time.Duration   `yaml:"reconnect_backoff_max"`
 	StatsInterval time.Duration   `yaml:"stats_interval"`
@@ -298,7 +383,7 @@ func (c *Client) SetDefaults() {
 }
 
 // Normalize turns the single-upstream shape into Upstreams and applies
-// top-level transport, token, TLS, KCP and backoff defaults to each upstream entry.
+// top-level transport, compression, token, TLS, KCP and backoff defaults to each upstream entry.
 func (c *Client) Normalize() error {
 	hasServer := c.Server != ""
 	hasChannels := len(c.Channels) > 0
@@ -317,10 +402,12 @@ func (c *Client) Normalize() error {
 	if !hasUpstreams {
 		tls := c.TLS
 		kcp := c.KCP
+		comp := c.Compression
 		c.Upstreams = []Upstream{{
 			Name:         DefaultUpstreamName,
 			Server:       c.Server,
 			Transport:    c.Transport,
+			Compression:  &comp,
 			Token:        c.Token,
 			TLS:          &tls,
 			KCP:          &kcp,
@@ -351,6 +438,10 @@ func (c *Client) Normalize() error {
 			kcp := c.KCP
 			u.KCP = &kcp
 		}
+		if u.Compression == nil {
+			comp := c.Compression
+			u.Compression = &comp
+		}
 		if u.ReconnectMin == 0 {
 			u.ReconnectMin = c.ReconnectMin
 		}
@@ -372,6 +463,7 @@ func (s *Server) Validate() error {
 		add("listen: %v", err)
 	}
 	errs = append(errs, validateTransport("", s.Transport, s.TLS.Enabled)...)
+	errs = append(errs, s.Compression.validate("")...)
 	if s.Transport == TransportKCP {
 		errs = append(errs, s.KCP.validate("kcp: ")...)
 	}
@@ -463,6 +555,9 @@ func (c *Client) Validate() error {
 			tls = *u.TLS
 		}
 		errs = append(errs, validateTransport(prefix+": ", u.Transport, tls.Enabled)...)
+		if u.Compression != nil {
+			errs = append(errs, u.Compression.validate(prefix+": ")...)
+		}
 		if u.Transport == TransportKCP && u.KCP != nil {
 			errs = append(errs, u.KCP.validate(prefix+": kcp: ")...)
 		}

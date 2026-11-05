@@ -33,6 +33,10 @@ max_payload: 65535
 # Interval between stats log lines, as a Go duration. Default 10s.
 stats_interval: 10s
 
+# Payload compression: none (default), zstd or s2. The other end must use the
+# same value, or the handshake fails. Details in docs/configuration.md.
+# compression: none
+
 # Shared secret that the client must present, at most 255 bytes. Without TLS
 # it crosses the network in clear text.
 token: change-me

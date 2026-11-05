@@ -6,10 +6,12 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/config"
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/stats"
 )
 
-// Listen starts the server-side listener for cfg.Transport.
-func Listen(cfg config.Server, log *zap.Logger) (Listener, error) {
+// Listen starts the server-side listener for cfg.Transport. cs receives the
+// compression counters and may be nil.
+func Listen(cfg config.Server, log *zap.Logger, cs *stats.CompressionCounters) (Listener, error) {
 	ids := make([]uint16, len(cfg.Channels))
 	for i, ch := range cfg.Channels {
 		ids[i] = ch.ID
@@ -20,13 +22,13 @@ func Listen(cfg config.Server, log *zap.Logger) (Listener, error) {
 		if err != nil {
 			return nil, err
 		}
-		l, err := ListenQUIC(cfg.Listen, QUICServerOptions{Token: cfg.Token, Channels: ids, TLS: tlsConf, Log: log})
+		l, err := ListenQUIC(cfg.Listen, QUICServerOptions{Token: cfg.Token, Channels: ids, TLS: tlsConf, Log: log, Compression: cfg.Compression, CompStats: cs})
 		if err != nil {
 			return nil, err
 		}
 		return l, nil
 	case config.TransportKCP:
-		l, err := ListenKCP(cfg.Listen, KCPServerOptions{Token: cfg.Token, Channels: ids, KCP: cfg.KCP, Log: log})
+		l, err := ListenKCP(cfg.Listen, KCPServerOptions{Token: cfg.Token, Channels: ids, KCP: cfg.KCP, Log: log, Compression: cfg.Compression, CompStats: cs})
 		if err != nil {
 			return nil, err
 		}
@@ -36,7 +38,7 @@ func Listen(cfg config.Server, log *zap.Logger) (Listener, error) {
 		if err != nil {
 			return nil, err
 		}
-		l, err := ListenTCP(cfg.Listen, TCPServerOptions{Token: cfg.Token, Channels: ids, TLS: tlsConf, Log: log})
+		l, err := ListenTCP(cfg.Listen, TCPServerOptions{Token: cfg.Token, Channels: ids, TLS: tlsConf, Log: log, Compression: cfg.Compression, CompStats: cs})
 		if err != nil {
 			return nil, err
 		}
@@ -46,8 +48,13 @@ func Listen(cfg config.Server, log *zap.Logger) (Listener, error) {
 	}
 }
 
-// NewDialer builds the client-side dialer for one upstream.
-func NewDialer(u config.Upstream) (Dialer, error) {
+// NewDialer builds the client-side dialer for one upstream. cs receives the
+// compression counters and may be nil.
+func NewDialer(u config.Upstream, cs *stats.CompressionCounters) (Dialer, error) {
+	var comp config.Compression
+	if u.Compression != nil {
+		comp = *u.Compression
+	}
 	tlsCfg := config.ClientTLS{}
 	if u.TLS != nil {
 		tlsCfg = *u.TLS
@@ -66,11 +73,11 @@ func NewDialer(u config.Upstream) (Dialer, error) {
 	}
 	switch u.Transport {
 	case config.TransportQUIC:
-		return NewQUICDialer(QUICDialerOptions{Addr: u.Server, Token: u.Token, Channels: ids, TLS: tlsConf}), nil
+		return NewQUICDialer(QUICDialerOptions{Addr: u.Server, Token: u.Token, Channels: ids, TLS: tlsConf, Compression: comp, CompStats: cs}), nil
 	case config.TransportKCP:
-		return NewKCPDialer(KCPDialerOptions{Addr: u.Server, Token: u.Token, Channels: ids, KCP: k}), nil
+		return NewKCPDialer(KCPDialerOptions{Addr: u.Server, Token: u.Token, Channels: ids, KCP: k, Compression: comp, CompStats: cs}), nil
 	case config.TransportTCP, "":
-		return NewTCPDialer(TCPDialerOptions{Addr: u.Server, Token: u.Token, Channels: ids, TLS: tlsConf}), nil
+		return NewTCPDialer(TCPDialerOptions{Addr: u.Server, Token: u.Token, Channels: ids, TLS: tlsConf, Compression: comp, CompStats: cs}), nil
 	default:
 		return nil, fmt.Errorf("unknown transport %q", u.Transport)
 	}

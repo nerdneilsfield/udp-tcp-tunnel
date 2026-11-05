@@ -18,6 +18,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/config"
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/stats"
 	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/tunnel"
 )
 
@@ -53,8 +54,14 @@ func selfSigned(t *testing.T) (server, client *tls.Config) {
 // transport builds matching listeners and dialers for one transport.
 type transport struct {
 	name   string
-	listen func(addr, token string) (tunnel.Listener, error)
-	dialer func(addr, token string) tunnel.Dialer
+	listen func(addr, token string, o copt) (tunnel.Listener, error)
+	dialer func(addr, token string, o copt) tunnel.Dialer
+}
+
+// copt carries the optional compression settings of a test listener or dialer.
+type copt struct {
+	comp  config.Compression
+	stats *stats.CompressionCounters
 }
 
 func transports(t *testing.T) []transport {
@@ -64,29 +71,42 @@ func transports(t *testing.T) []transport {
 	kcpCfg := config.KCP{Key: "test-key", DataShards: 3, ParityShards: 1}
 	return []transport{
 		{
-			name: "quic",
-			listen: func(addr, token string) (tunnel.Listener, error) {
-				l, err := tunnel.ListenQUIC(addr, tunnel.QUICServerOptions{Token: token, Channels: ids, TLS: srvTLS, IdleTimeout: testLiveness})
+			name: "tcp",
+			listen: func(addr, token string, o copt) (tunnel.Listener, error) {
+				l, err := tunnel.ListenTCP(addr, tunnel.TCPServerOptions{Token: token, Channels: ids, Compression: o.comp, CompStats: o.stats})
 				if err != nil {
 					return nil, err
 				}
 				return l, nil
 			},
-			dialer: func(addr, token string) tunnel.Dialer {
-				return tunnel.NewQUICDialer(tunnel.QUICDialerOptions{Addr: addr, Token: token, Channels: ids, TLS: cliTLS, IdleTimeout: testLiveness})
+			dialer: func(addr, token string, o copt) tunnel.Dialer {
+				return tunnel.NewTCPDialer(tunnel.TCPDialerOptions{Addr: addr, Token: token, Channels: ids, Compression: o.comp, CompStats: o.stats})
+			},
+		},
+		{
+			name: "quic",
+			listen: func(addr, token string, o copt) (tunnel.Listener, error) {
+				l, err := tunnel.ListenQUIC(addr, tunnel.QUICServerOptions{Token: token, Channels: ids, TLS: srvTLS, IdleTimeout: testLiveness, Compression: o.comp, CompStats: o.stats})
+				if err != nil {
+					return nil, err
+				}
+				return l, nil
+			},
+			dialer: func(addr, token string, o copt) tunnel.Dialer {
+				return tunnel.NewQUICDialer(tunnel.QUICDialerOptions{Addr: addr, Token: token, Channels: ids, TLS: cliTLS, IdleTimeout: testLiveness, Compression: o.comp, CompStats: o.stats})
 			},
 		},
 		{
 			name: "kcp",
-			listen: func(addr, token string) (tunnel.Listener, error) {
-				l, err := tunnel.ListenKCP(addr, tunnel.KCPServerOptions{Token: token, Channels: ids, KCP: kcpCfg, Liveness: testLiveness})
+			listen: func(addr, token string, o copt) (tunnel.Listener, error) {
+				l, err := tunnel.ListenKCP(addr, tunnel.KCPServerOptions{Token: token, Channels: ids, KCP: kcpCfg, Liveness: testLiveness, Compression: o.comp, CompStats: o.stats})
 				if err != nil {
 					return nil, err
 				}
 				return l, nil
 			},
-			dialer: func(addr, token string) tunnel.Dialer {
-				return tunnel.NewKCPDialer(tunnel.KCPDialerOptions{Addr: addr, Token: token, Channels: ids, KCP: kcpCfg, Liveness: testLiveness})
+			dialer: func(addr, token string, o copt) tunnel.Dialer {
+				return tunnel.NewKCPDialer(tunnel.KCPDialerOptions{Addr: addr, Token: token, Channels: ids, KCP: kcpCfg, Liveness: testLiveness, Compression: o.comp, CompStats: o.stats})
 			},
 		},
 	}
@@ -106,18 +126,18 @@ func accept(t *testing.T, l tunnel.Listener) tunnel.Session {
 func TestTransportsAuth(t *testing.T) {
 	for _, tr := range transports(t) {
 		t.Run(tr.name, func(t *testing.T) {
-			l, err := tr.listen("127.0.0.1:0", "secret")
+			l, err := tr.listen("127.0.0.1:0", "secret", copt{})
 			must(t, err)
 			defer l.Close()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, derr := tr.dialer(l.Addr(), "wrong").Dial(ctx)
+			_, derr := tr.dialer(l.Addr(), "wrong", copt{}).Dial(ctx)
 			if !errors.Is(derr, tunnel.ErrAuthFailed) {
 				t.Fatalf("wrong token: got %v, want ErrAuthFailed", derr)
 			}
 
-			cli, err := tr.dialer(l.Addr(), "secret").Dial(ctx)
+			cli, err := tr.dialer(l.Addr(), "secret", copt{}).Dial(ctx)
 			must(t, err)
 			defer cli.Close()
 			srv := accept(t, l)
@@ -137,13 +157,13 @@ func TestTransportsAuth(t *testing.T) {
 func TestTransportsRoundTrip(t *testing.T) {
 	for _, tr := range transports(t) {
 		t.Run(tr.name, func(t *testing.T) {
-			l, err := tr.listen("127.0.0.1:0", "tok")
+			l, err := tr.listen("127.0.0.1:0", "tok", copt{})
 			must(t, err)
 			defer l.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			cli, err := tr.dialer(l.Addr(), "tok").Dial(ctx)
+			cli, err := tr.dialer(l.Addr(), "tok", copt{}).Dial(ctx)
 			must(t, err)
 			defer cli.Close()
 			srv := accept(t, l)
@@ -188,12 +208,12 @@ func recvWithin(t *testing.T, s tunnel.Session) (uint16, []byte, error) {
 func TestTransportsIdleSessionSurvives(t *testing.T) {
 	for _, tr := range transports(t) {
 		t.Run(tr.name, func(t *testing.T) {
-			l, err := tr.listen("127.0.0.1:0", "")
+			l, err := tr.listen("127.0.0.1:0", "", copt{})
 			must(t, err)
 			defer l.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			cli, err := tr.dialer(l.Addr(), "").Dial(ctx)
+			cli, err := tr.dialer(l.Addr(), "", copt{}).Dial(ctx)
 			must(t, err)
 			defer cli.Close()
 			srv := accept(t, l)
@@ -235,12 +255,12 @@ func TestTransportsIdleSessionSurvives(t *testing.T) {
 func TestTransportsPeerGoneDetected(t *testing.T) {
 	for _, tr := range transports(t) {
 		t.Run(tr.name, func(t *testing.T) {
-			l, err := tr.listen("127.0.0.1:0", "")
+			l, err := tr.listen("127.0.0.1:0", "", copt{})
 			must(t, err)
 			defer l.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			cli, err := tr.dialer(l.Addr(), "").Dial(ctx)
+			cli, err := tr.dialer(l.Addr(), "", copt{}).Dial(ctx)
 			must(t, err)
 			defer cli.Close()
 			srv := accept(t, l)
@@ -263,7 +283,7 @@ func TestClientOverTransports(t *testing.T) {
 	for _, tr := range transports(t) {
 		t.Run(tr.name, func(t *testing.T) {
 			target := udpListener(t)
-			l, err := tr.listen("127.0.0.1:0", "tok")
+			l, err := tr.listen("127.0.0.1:0", "tok", copt{})
 			must(t, err)
 			addr := l.Addr()
 
@@ -279,7 +299,7 @@ func TestClientOverTransports(t *testing.T) {
 					Channels: []config.ClientChannel{{ID: 1, Target: target.LocalAddr().String()}},
 				}},
 			}
-			client, err := tunnel.NewClientWithDialer(cfg, tr.dialer(addr, "tok"), zap.NewNop())
+			client, err := tunnel.NewClientWithDialer(cfg, tr.dialer(addr, "tok", copt{}), zap.NewNop())
 			must(t, err)
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
@@ -295,7 +315,7 @@ func TestClientOverTransports(t *testing.T) {
 			sess.Close()
 			l.Close()
 			for i := 0; ; i++ {
-				l, err = tr.listen(addr, "tok")
+				l, err = tr.listen(addr, "tok", copt{})
 				if err == nil {
 					break
 				}

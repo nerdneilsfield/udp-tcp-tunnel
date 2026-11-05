@@ -426,3 +426,89 @@ func TestLoadTransportExamples(t *testing.T) {
 		}
 	}
 }
+
+func loadClientYAML(t *testing.T, content string) (Client, error) {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "c.yaml")
+	if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return LoadClient(p)
+}
+
+func TestCompressionYAMLForms(t *testing.T) {
+	base := "server: 'h:1'\nchannels: [{id: 1, target: '127.0.0.1:1'}]\n"
+	for _, tc := range []struct {
+		yaml, algo string
+		level      int
+	}{
+		{"", "none", 0},
+		{"compression: zstd\n", "zstd", 1},
+		{"compression: s2\n", "s2", 1},
+		{"compression: none\n", "none", 0},
+		{"compression: {algorithm: zstd, level: 3}\n", "zstd", 3},
+		{"compression: {algorithm: s2}\n", "s2", 1},
+	} {
+		c, err := loadClientYAML(t, base+tc.yaml)
+		if err != nil {
+			t.Fatalf("%q: %v", tc.yaml, err)
+		}
+		got := c.Upstreams[0].Compression.Resolved()
+		if got.Algorithm != tc.algo || got.Level != tc.level {
+			t.Fatalf("%q: got %+v, want %s level %d", tc.yaml, got, tc.algo, tc.level)
+		}
+	}
+}
+
+func TestCompressionValidation(t *testing.T) {
+	base := "server: 'h:1'\nchannels: [{id: 1, target: '127.0.0.1:1'}]\n"
+	for yaml, want := range map[string]string{
+		"compression: lz4\n":                         `compression: algorithm "lz4" must be`,
+		"compression: {algorithm: zstd, level: 9}\n": "level for zstd must be between 1 and 4",
+		"compression: {algorithm: s2, level: 4}\n":   "level for s2 must be between 1 and 3",
+		"compression: {algorithm: none, level: 1}\n": `level is not used with algorithm "none"`,
+		"compression: {algorithm: zstd, lvl: 1}\n":   "field lvl not found in compression",
+		"compression: [zstd]\n":                      "compression must be a string or a mapping",
+	} {
+		_, err := loadClientYAML(t, base+yaml)
+		assertErr(t, err, want)
+	}
+
+	s := validServer()
+	s.Compression = Compression{Algorithm: "zstd", Level: 7}
+	assertErr(t, s.Validate(), "level for zstd")
+	s.Compression = Compression{Algorithm: "s2"}
+	if err := s.Validate(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompressionInheritance(t *testing.T) {
+	c, err := loadClientYAML(t, `
+compression: zstd
+upstreams:
+  - {name: a, server: 'h:1', channels: [{id: 1, target: '127.0.0.1:1'}]}
+  - {name: b, server: 'h:2', compression: none, channels: [{id: 1, target: '127.0.0.1:2'}]}
+  - {name: c, server: 'h:3', compression: {algorithm: s2, level: 2}, channels: [{id: 1, target: '127.0.0.1:3'}]}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []Compression{{"zstd", 1}, {"none", 0}, {"s2", 2}} {
+		if got := c.Upstreams[i].Compression.Resolved(); got != want {
+			t.Fatalf("upstream %d: got %+v, want %+v", i, got, want)
+		}
+	}
+}
+
+func TestLoadCompressionExamples(t *testing.T) {
+	ex := func(name string) string { return filepath.Join("..", "..", "examples", name) }
+	s, err := LoadServer(ex("server-quic.yaml"))
+	if err != nil || s.Compression.Resolved().Algorithm != CompressionZstd {
+		t.Fatalf("server-quic: %+v %v", s.Compression, err)
+	}
+	s, err = LoadServer(ex("server-kcp.yaml"))
+	if err != nil || s.Compression.Resolved().Algorithm != CompressionS2 {
+		t.Fatalf("server-kcp: %+v %v", s.Compression, err)
+	}
+}
