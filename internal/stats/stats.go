@@ -20,6 +20,7 @@ const (
 	Oversized
 	Fragment
 	CaptureDrop
+	CaptureFreeze
 	NoClient
 	WriteError
 	numReasons
@@ -31,6 +32,7 @@ var reasonNames = [numReasons]string{
 	Oversized:      "oversized",
 	Fragment:       "fragment",
 	CaptureDrop:    "capture_drop",
+	CaptureFreeze:  "capture_freeze",
 	NoClient:       "no_client",
 	WriteError:     "write_error",
 }
@@ -92,7 +94,7 @@ type channel struct {
 
 // Registry owns the counters of every channel plus a "global" set for
 // drops that cannot be attributed to a channel (unknown channel, fragments,
-// kernel capture drops).
+// kernel capture drops and ring freezes).
 type Registry struct {
 	side     string
 	log      *zap.Logger

@@ -69,7 +69,7 @@ func TestLogFields(t *testing.T) {
 	fields := entries[0].ContextMap()
 	for _, key := range []string{
 		"pps", "mbps", "drop_queue_full", "drop_unknown_channel", "drop_oversized",
-		"drop_fragment", "drop_capture_drop", "drop_no_client",
+		"drop_fragment", "drop_capture_drop", "drop_capture_freeze", "drop_no_client",
 	} {
 		if _, ok := fields[key]; !ok {
 			t.Fatalf("missing field %s", key)
@@ -80,7 +80,8 @@ func TestLogFields(t *testing.T) {
 func TestReasonNames(t *testing.T) {
 	want := map[Reason]string{
 		QueueFull: "queue_full", UnknownChannel: "unknown_channel", Oversized: "oversized",
-		Fragment: "fragment", CaptureDrop: "capture_drop", NoClient: "no_client", WriteError: "write_error",
+		Fragment: "fragment", CaptureDrop: "capture_drop", CaptureFreeze: "capture_freeze",
+		NoClient: "no_client", WriteError: "write_error",
 	}
 	for r, name := range want {
 		if r.String() != name {

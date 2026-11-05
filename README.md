@@ -291,6 +291,7 @@ Unknown keys are rejected, so a misspelled key stops the program at startup.
 ## Caveats
 
 - **The source address is not preserved.** The receiver sees every datagram of a channel coming from the client host, from one UDP port that the client picks when it starts. A receiver that filters by sender address must be configured for the client address.
+- **A vanished TCP peer used to stall for minutes.** Writes can succeed into the kernel send buffer while retransmits run under `tcp_retries2` (often ~8–15 minutes). The tunnel now sets Linux `TCP_USER_TIMEOUT` to 30s and short keepalive probes so the session fails fast and the client reconnects.
 - **TCP adds head-of-line blocking.** All channels share one TCP connection. A lost TCP segment delays every channel until it is retransmitted. When the connection cannot keep up, the server queue fills and the newest datagrams are dropped as `queue_full`.
 - **macOS limits outgoing datagram size.** macOS caps a UDP datagram at the `net.inet.udp.maxdgram` sysctl, which is 9216 bytes by default. A client on macOS cannot send a larger payload and counts it as `write_error`. Raise the limit with `sudo sysctl -w net.inet.udp.maxdgram=65535` if the tunnel carries larger datagrams.
 - **IP fragments are not reassembled.** In `afpacket` mode the server counts IPv4 first fragments as `fragment` and drops them. The kernel filter drops later IPv4 fragments and all IPv6 fragments without counting them. In `socket` mode the kernel reassembles fragments before the server reads them.

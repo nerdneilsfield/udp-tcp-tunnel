@@ -6,7 +6,7 @@ The protocol has version 1 and the magic value `UTT1` (bytes `55 54 54 31`). It 
 
 ## Connection
 
-The client opens a TCP connection to `server`. When TLS is enabled on both sides, the TLS handshake runs first and every message below travels inside TLS. Both sides enable `TCP_NODELAY` and TCP keepalive with a 30-second period.
+The client opens a TCP connection to `server`. When TLS is enabled on both sides, the TLS handshake runs first and every message below travels inside TLS. Both sides enable `TCP_NODELAY`, TCP keepalive (idle 15s, interval 5s, 3 probes) and, on Linux, `TCP_USER_TIMEOUT` of 30 seconds.
 
 A connection has two phases:
 
@@ -86,11 +86,13 @@ The receiver rejects a frame whose length field exceeds 65535 before it reads th
 
 Each frame write has a 15-second deadline. If a write fails or times out, the server counts the datagram as `write_error`, logs `send failed` and closes the connection. The client then reconnects with its backoff.
 
+A write deadline alone is not enough when the peer disappears while the TCP send buffer still has room: `Write` copies into the kernel and returns success, and the connection only fails after `tcp_retries2` (often around 8–15 minutes). Linux `TCP_USER_TIMEOUT` of 30 seconds aborts such connections when data stays unacknowledged. Keepalive covers the idle case (about 30 seconds with the settings above).
+
 ## Session rules
 
-- The server keeps one active client. When a second client completes the handshake, the server closes the first connection.
+- The server keeps one active client. When a second client completes the handshake, the server closes the first connection and the previous serve loop exits so it does not share the queue with the new client.
 - When a client is accepted, the server discards datagrams still waiting in its queue, so the client receives only datagrams captured after it connected.
-- The client detects a closed connection when a read fails. A silent network failure is detected through TCP keepalive.
+- The client detects a closed connection when a read fails. A silent network failure is detected through TCP keepalive when idle, and through `TCP_USER_TIMEOUT` when data is in flight.
 
 ## Other transports
 

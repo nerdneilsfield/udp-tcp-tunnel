@@ -13,11 +13,26 @@ import (
 )
 
 const (
-	handshakeTimeout = 10 * time.Second
-	writeTimeout     = 15 * time.Second
-	keepAlive        = 30 * time.Second
-	readBufferSize   = 64 << 10
+	handshakeTimeout  = 10 * time.Second
+	writeTimeout      = 15 * time.Second
+	userTimeout       = 30 * time.Second // TCP_USER_TIMEOUT: max unacked data lifetime
+	keepAliveIdle     = 15 * time.Second
+	keepAliveInterval = 5 * time.Second
+	keepAliveCount    = 3
+	readBufferSize    = 64 << 10
 )
+
+// keepAliveConfig detects dead idle peers in about keepAliveIdle +
+// keepAliveCount*keepAliveInterval (~30s). Continuous writers still need
+// userTimeout: keepalive probes only run while the connection is idle.
+func keepAliveConfig() net.KeepAliveConfig {
+	return net.KeepAliveConfig{
+		Enable:   true,
+		Idle:     keepAliveIdle,
+		Interval: keepAliveInterval,
+		Count:    keepAliveCount,
+	}
+}
 
 // tcpSession implements Session over a net.Conn (plain TCP or TLS).
 type tcpSession struct {
@@ -52,13 +67,17 @@ func (s *tcpSession) RemoteAddr() string { return s.conn.RemoteAddr().String() }
 
 func (s *tcpSession) Close() error { return s.conn.Close() }
 
-// tuneTCP applies TCP_NODELAY and keepalive when conn is a TCP connection.
+// tuneTCP applies TCP_NODELAY, aggressive keepalive and (on Linux)
+// TCP_USER_TIMEOUT so a blackholed peer is dropped in tens of seconds
+// instead of the kernel tcp_retries2 window (~8–15 minutes).
 func tuneTCP(conn net.Conn) {
-	if tc, ok := conn.(*net.TCPConn); ok {
-		_ = tc.SetNoDelay(true)
-		_ = tc.SetKeepAlive(true)
-		_ = tc.SetKeepAlivePeriod(keepAlive)
+	tc, ok := conn.(*net.TCPConn)
+	if !ok {
+		return
 	}
+	_ = tc.SetNoDelay(true)
+	_ = tc.SetKeepAliveConfig(keepAliveConfig())
+	setTCPUserTimeout(tc, userTimeout)
 }
 
 // TCPServerOptions configures ListenTCP.
@@ -82,7 +101,7 @@ type TCPListener struct {
 
 // ListenTCP starts listening and performing handshakes in the background.
 func ListenTCP(addr string, opts TCPServerOptions) (*TCPListener, error) {
-	lc := net.ListenConfig{KeepAlive: keepAlive}
+	lc := net.ListenConfig{KeepAliveConfig: keepAliveConfig()}
 	ln, err := lc.Listen(context.Background(), "tcp", addr)
 	if err != nil {
 		return nil, err
@@ -203,7 +222,7 @@ func NewTCPDialer(opts TCPDialerOptions) *TCPDialer {
 
 // Dial connects, optionally upgrades to TLS and performs the handshake.
 func (d *TCPDialer) Dial(ctx context.Context) (Session, error) {
-	nd := net.Dialer{Timeout: d.opts.Timeout, KeepAlive: keepAlive}
+	nd := net.Dialer{Timeout: d.opts.Timeout, KeepAliveConfig: keepAliveConfig()}
 	raw, err := nd.DialContext(ctx, "tcp", d.opts.Addr)
 	if err != nil {
 		return nil, err

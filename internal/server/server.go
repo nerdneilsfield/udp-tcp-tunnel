@@ -242,6 +242,7 @@ func (s *Server) handle(p capture.Packet) {
 func (s *Server) refreshCaptureStats() {
 	st := s.capture.Stats()
 	s.stats.Global().SetDrops(stats.CaptureDrop, st.KernelDrops)
+	s.stats.Global().SetDrops(stats.CaptureFreeze, st.QueueFreezes)
 	s.stats.Global().SetDrops(stats.Fragment, st.Fragments)
 }
 
@@ -328,6 +329,14 @@ func (s *Server) serve(ctx context.Context, sess tunnel.Session) {
 			s.log.Info("client disconnected", zap.String("remote", sess.RemoteAddr()))
 			return
 		case f := <-s.queue:
+			// A reconnecting client closes the previous session; stop so we
+			// do not race the new serve loop for the shared queue.
+			s.mu.Lock()
+			stillActive := s.active == sess
+			s.mu.Unlock()
+			if !stillActive {
+				return
+			}
 			if err := sess.Send(f.channel, f.payload); err != nil {
 				f.counters.Drop(stats.WriteError)
 				s.log.Warn("send failed", zap.String("remote", sess.RemoteAddr()), zap.Error(err))

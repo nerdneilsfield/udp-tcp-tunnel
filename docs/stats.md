@@ -41,12 +41,13 @@ The drop counters are cumulative. Both lines always carry all seven `drop_` fiel
 | `unknown_channel` | client | `global drops` | A frame carried a channel ID that the client configuration does not list |
 | `oversized` | server | `channel stats` | The payload was larger than `max_payload` |
 | `fragment` | server | `global drops` | An IPv4 first fragment was captured in `afpacket` mode. See [Fragments](capture-modes.md#fragments). |
-| `capture_drop` | server | `global drops` | The kernel dropped frames because the AF_PACKET ring was full. Always 0 in `socket` mode. |
+| `capture_drop` | server | `global drops` | AF_PACKET kernel drops (`PACKET_STATISTICS`). |
+| `capture_freeze` | server | `global drops` | AF_PACKET TPACKET_V3 ring freezes (`tp_freeze_q_cnt`). Userspace was too slow releasing blocks. |
 | `no_client` | server | `channel stats` | A datagram arrived while no client was connected |
 | `write_error` | server | `channel stats` | Writing the frame to the TCP connection failed. The server then closes the connection. |
 | `write_error` | client | `channel stats` | Sending the datagram to `target` failed. On macOS this includes payloads larger than `net.inet.udp.maxdgram` (9216 bytes by default). |
 
-The server reads `capture_drop` and `fragment` from the capture layer just before each report, so these two counters change only at report time.
+The server reads `capture_drop`, `capture_freeze` and `fragment` from the capture layer just before each report, so these counters change only at report time.
 
 Some losses are not counted:
 
@@ -71,4 +72,4 @@ On Linux, when nothing listens on a client `target`, the kernel reports the ICMP
 2026-11-04T15:47:05.959-0500	INFO	channel stats	{"side": "client", "channel": 1, "name": "demo", "pps": 0.4, "mbps": 0, "packets": 2, "bytes": 4, "drop_queue_full": 0, "drop_unknown_channel": 0, "drop_oversized": 0, "drop_fragment": 0, "drop_capture_drop": 0, "drop_no_client": 0, "drop_write_error": 1}
 ```
 
-A steady rise in `queue_full` means that the TCP connection cannot carry the input rate. A rise in `capture_drop` means that the server does not read the AF_PACKET ring fast enough.
+A steady rise in `queue_full` means that the TCP connection cannot carry the input rate. A rise in `capture_drop` or `capture_freeze` means that the server does not read the AF_PACKET ring fast enough. A freeze lasting many minutes with flat `capture_freeze` usually points at the TCP tunnel (see `TCP_USER_TIMEOUT` in [protocol.md](protocol.md)), not the ring.

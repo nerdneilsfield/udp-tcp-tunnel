@@ -22,6 +22,9 @@ type Stats struct {
 	// KernelDrops counts packets the kernel dropped because the capture
 	// could not keep up (AF_PACKET only).
 	KernelDrops uint64
+	// QueueFreezes counts TPACKET_V3 ring freezes (AF_PACKET only). A
+	// rising count means userspace was not releasing blocks fast enough.
+	QueueFreezes uint64
 	// Fragments counts IP fragments that were seen and ignored.
 	Fragments uint64
 }

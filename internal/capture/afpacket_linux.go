@@ -80,6 +80,7 @@ func (a *AFPacket) Stats() Stats {
 	st := Stats{Fragments: a.fragments.Load()}
 	if _, v3, err := a.tp.SocketStats(); err == nil {
 		st.KernelDrops = uint64(v3.Drops())
+		st.QueueFreezes = uint64(v3.QueueFreezes())
 	}
 	return st
 }
