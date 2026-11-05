@@ -18,9 +18,9 @@ func TestTuneTCPSetsUserTimeoutAndKeepAlive(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		c, err := ln.Accept()
-		if err != nil {
-			errCh <- err
+		c, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			errCh <- acceptErr
 			return
 		}
 		defer c.Close()
@@ -36,8 +36,8 @@ func TestTuneTCPSetsUserTimeoutAndKeepAlive(t *testing.T) {
 	defer client.Close()
 	tuneTCP(client)
 
-	if err := <-errCh; err != nil {
-		t.Fatal(err)
+	if acceptErr := <-errCh; acceptErr != nil {
+		t.Fatal(acceptErr)
 	}
 
 	tc := client.(*net.TCPConn)

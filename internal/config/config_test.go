@@ -153,7 +153,7 @@ func TestClientMultiValidate(t *testing.T) {
 		{"per upstream channel clash", func(c *Client) {
 			c.Upstreams[0].Channels = append(c.Upstreams[0].Channels, ClientChannel{ID: 1, Target: "127.0.0.1:2400"})
 		}, "already used"},
-		{"same channel id on different upstreams ok", func(c *Client) {}, ""},
+		{"same channel id on different upstreams ok", func(*Client) {}, ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
