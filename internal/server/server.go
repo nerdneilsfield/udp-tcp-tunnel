@@ -72,6 +72,7 @@ func New(cfg config.Server, log *zap.Logger, opts ...Option) *Server {
 		queue:    make(chan frame, cfg.QueueSize),
 		ready:    make(chan struct{}),
 	}
+	s.stats.SetTransport("", cfg.Transport)
 	for _, ch := range cfg.Channels {
 		s.channels[ch.ID] = s.stats.AddChannel(ch.ID, ch.Name)
 	}
@@ -122,6 +123,7 @@ func (s *Server) Run(ctx context.Context) error {
 	s.warnIfExposed()
 	s.log.Info("server started",
 		zap.String("listen", s.listener.Addr()),
+		zap.String("transport", s.cfg.Transport),
 		zap.String("capture", s.cfg.Capture),
 		zap.Int("channels", len(s.cfg.Channels)))
 
@@ -145,22 +147,9 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) listen() (tunnel.Listener, error) {
-	tlsConf, err := tunnel.ServerTLSConfig(s.cfg.TLS)
+	l, err := tunnel.Listen(s.cfg, s.log)
 	if err != nil {
-		return nil, err
-	}
-	ids := make([]uint16, len(s.cfg.Channels))
-	for i, ch := range s.cfg.Channels {
-		ids[i] = ch.ID
-	}
-	l, err := tunnel.ListenTCP(s.cfg.Listen, tunnel.TCPServerOptions{
-		Token:    s.cfg.Token,
-		Channels: ids,
-		TLS:      tlsConf,
-		Log:      s.log,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("listen %s: %w", s.cfg.Listen, err)
+		return nil, fmt.Errorf("listen %s (%s): %w", s.cfg.Listen, s.cfg.Transport, err)
 	}
 	return l, nil
 }
@@ -200,10 +189,17 @@ func (s *Server) warnIfExposed() {
 	if err != nil || isLoopback(host) {
 		return
 	}
-	if !s.cfg.TLS.Enabled || s.cfg.Token == "" {
+	// KCP has no TLS; its confidentiality comes from kcp.key.
+	encrypted := s.cfg.TLS.Enabled
+	if s.cfg.Transport == config.TransportKCP {
+		encrypted = s.cfg.KCP.Key != ""
+	}
+	if !encrypted || s.cfg.Token == "" {
 		s.log.Warn("tunnel listens on a non-loopback address without full protection",
 			zap.String("listen", s.listener.Addr()),
+			zap.String("transport", s.cfg.Transport),
 			zap.Bool("tls", s.cfg.TLS.Enabled),
+			zap.Bool("encrypted", encrypted),
 			zap.Bool("token", s.cfg.Token != ""))
 	}
 }

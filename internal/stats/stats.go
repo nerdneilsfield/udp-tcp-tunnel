@@ -72,14 +72,15 @@ func (c *Counters) Bytes() uint64 { return c.bytes.Load() }
 
 // Snapshot is a point-in-time view of one set of counters.
 type Snapshot struct {
-	Upstream string
-	ID       uint16
-	Name     string
-	Packets  uint64
-	Bytes    uint64
-	PPS      float64
-	Mbps     float64
-	Drops    [numReasons]uint64
+	Upstream  string
+	Transport string
+	ID        uint16
+	Name      string
+	Packets   uint64
+	Bytes     uint64
+	PPS       float64
+	Mbps      float64
+	Drops     [numReasons]uint64
 }
 
 // DropCount returns the drops recorded for a reason.
@@ -110,17 +111,19 @@ type Registry struct {
 	order       []*channel
 	globals     map[string]*Counters
 	globalOrder []string
+	transports  map[string]string
 	last        time.Time
 }
 
 // New builds a registry. side is "server" or "client" and appears in logs.
 func New(side string, log *zap.Logger) *Registry {
 	return &Registry{
-		side:     side,
-		log:      log,
-		channels: make(map[channelKey]*channel),
-		globals:  make(map[string]*Counters),
-		last:     time.Now(),
+		side:       side,
+		log:        log,
+		channels:   make(map[channelKey]*channel),
+		globals:    make(map[string]*Counters),
+		transports: make(map[string]string),
+		last:       time.Now(),
 	}
 }
 
@@ -146,6 +149,11 @@ func (r *Registry) AddUpstreamChannel(upstream string, id uint16, name string) *
 	_ = r.UpstreamGlobal(upstream)
 	return &ch.counters
 }
+
+// SetTransport records the transport name ("tcp", "quic", "kcp") reported in
+// the log lines of an upstream; the server uses the empty upstream name. It
+// must be called before Run.
+func (r *Registry) SetTransport(upstream, transport string) { r.transports[upstream] = transport }
 
 // Channel returns the counters for a registered channel with no upstream
 // label, or nil.
@@ -185,6 +193,7 @@ func (r *Registry) Snapshot(now time.Time) (channels []Snapshot, globals []Snaps
 	for _, ch := range r.order {
 		snap := snapshotOf(&ch.counters)
 		snap.Upstream, snap.ID, snap.Name = ch.upstream, ch.id, ch.name
+		snap.Transport = r.transports[ch.upstream]
 		if elapsed > 0 {
 			snap.PPS = float64(snap.Packets-ch.lastPackets) / elapsed
 			snap.Mbps = float64(snap.Bytes-ch.lastBytes) * 8 / elapsed / 1e6
@@ -195,6 +204,7 @@ func (r *Registry) Snapshot(now time.Time) (channels []Snapshot, globals []Snaps
 	for _, upstream := range r.globalOrder {
 		snap := snapshotOf(r.globals[upstream])
 		snap.Upstream = upstream
+		snap.Transport = r.transports[upstream]
 		globals = append(globals, snap)
 	}
 	return channels, globals
@@ -218,6 +228,9 @@ func (r *Registry) Log(now time.Time) {
 		if s.Upstream != "" {
 			fields = append(fields, zap.String("upstream", s.Upstream))
 		}
+		if s.Transport != "" {
+			fields = append(fields, zap.String("transport", s.Transport))
+		}
 		fields = append(fields,
 			zap.Uint16("channel", s.ID),
 			zap.String("name", s.Name),
@@ -232,6 +245,9 @@ func (r *Registry) Log(now time.Time) {
 		fields := []zap.Field{zap.String("side", r.side)}
 		if g.Upstream != "" {
 			fields = append(fields, zap.String("upstream", g.Upstream))
+		}
+		if g.Transport != "" {
+			fields = append(fields, zap.String("transport", g.Transport))
 		}
 		r.log.Info("global drops", append(fields, dropFields(g)...)...)
 	}

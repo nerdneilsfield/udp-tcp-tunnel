@@ -1,12 +1,10 @@
 package tunnel
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"errors"
 	"net"
-	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -34,39 +32,6 @@ func keepAliveConfig() net.KeepAliveConfig {
 	}
 }
 
-// tcpSession implements Session over a net.Conn (plain TCP or TLS).
-type tcpSession struct {
-	conn net.Conn
-	r    *bufio.Reader
-
-	wmu  sync.Mutex
-	wbuf []byte
-}
-
-func newTCPSession(conn net.Conn) *tcpSession {
-	return &tcpSession{conn: conn, r: bufio.NewReaderSize(conn, readBufferSize)}
-}
-
-func (s *tcpSession) Send(channel uint16, payload []byte) error {
-	s.wmu.Lock()
-	defer s.wmu.Unlock()
-
-	buf, err := AppendFrame(s.wbuf[:0], channel, payload)
-	if err != nil {
-		return err
-	}
-	s.wbuf = buf
-	_ = s.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
-	_, err = s.conn.Write(buf)
-	return err
-}
-
-func (s *tcpSession) Receive() (uint16, []byte, error) { return ReadFrame(s.r) }
-
-func (s *tcpSession) RemoteAddr() string { return s.conn.RemoteAddr().String() }
-
-func (s *tcpSession) Close() error { return s.conn.Close() }
-
 // tuneTCP applies TCP_NODELAY, aggressive keepalive and (on Linux)
 // TCP_USER_TIMEOUT so a blackholed peer is dropped in tens of seconds
 // instead of the kernel tcp_retries2 window (~8–15 minutes).
@@ -90,13 +55,10 @@ type TCPServerOptions struct {
 
 // TCPListener is the server side of the TCP transport.
 type TCPListener struct {
+	*baseListener
 	ln    net.Listener
 	opts  TCPServerOptions
 	known map[uint16]struct{}
-
-	ready chan Session
-	done  chan struct{}
-	once  sync.Once
 }
 
 // ListenTCP starts listening and performing handshakes in the background.
@@ -110,42 +72,21 @@ func ListenTCP(addr string, opts TCPServerOptions) (*TCPListener, error) {
 		opts.Log = zap.NewNop()
 	}
 	l := &TCPListener{
-		ln:    ln,
-		opts:  opts,
-		known: make(map[uint16]struct{}, len(opts.Channels)),
-		ready: make(chan Session),
-		done:  make(chan struct{}),
-	}
-	for _, id := range opts.Channels {
-		l.known[id] = struct{}{}
+		baseListener: newBaseListener(ln.Addr().String(), ln.Close),
+		ln:           ln,
+		opts:         opts,
+		known:        knownChannels(opts.Channels),
 	}
 	go l.acceptLoop()
 	return l, nil
 }
 
-// Addr returns the bound address, useful when listening on port 0.
-func (l *TCPListener) Addr() string { return l.ln.Addr().String() }
-
-// Accept returns the next client that passed the handshake.
-func (l *TCPListener) Accept(ctx context.Context) (Session, error) {
-	select {
-	case s := <-l.ready:
-		return s, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-l.done:
-		return nil, net.ErrClosed
+func knownChannels(ids []uint16) map[uint16]struct{} {
+	known := make(map[uint16]struct{}, len(ids))
+	for _, id := range ids {
+		known[id] = struct{}{}
 	}
-}
-
-// Close stops accepting connections.
-func (l *TCPListener) Close() error {
-	var err error
-	l.once.Do(func() {
-		close(l.done)
-		err = l.ln.Close()
-	})
-	return err
+	return known
 }
 
 func (l *TCPListener) acceptLoop() {
@@ -176,28 +117,12 @@ func (l *TCPListener) handshake(raw net.Conn) {
 	log := l.opts.Log.With(zap.String("remote", raw.RemoteAddr().String()))
 
 	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
-	hello, err := ReadHello(conn)
-	if err != nil {
-		log.Warn("handshake failed", zap.Error(err))
-		if errors.Is(err, ErrBadVersion) {
-			_ = WriteReply(conn, StatusBadVersion)
-		}
-		_ = conn.Close()
-		return
-	}
-	status := hello.Check(l.opts.Token, l.known)
-	if err := WriteReply(conn, status); err != nil || status != StatusOK {
-		log.Warn("handshake rejected", zap.Uint8("status", uint8(status)), zap.Error(err))
+	if err := serverHandshake(conn, l.opts.Token, l.known, log); err != nil {
 		_ = conn.Close()
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
-
-	select {
-	case l.ready <- newTCPSession(conn):
-	case <-l.done:
-		_ = conn.Close()
-	}
+	l.deliver(newConnSession(conn, 0))
 }
 
 // TCPDialerOptions configures a TCP dialer.
@@ -234,17 +159,10 @@ func (d *TCPDialer) Dial(ctx context.Context) (Session, error) {
 		conn = tls.Client(raw, d.opts.TLS)
 	}
 	_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
-	if err := d.handshake(conn); err != nil {
+	if err := clientHandshake(conn, Hello{Token: d.opts.Token, Channels: d.opts.Channels}); err != nil {
 		_ = conn.Close()
 		return nil, err
 	}
 	_ = conn.SetDeadline(time.Time{})
-	return newTCPSession(conn), nil
-}
-
-func (d *TCPDialer) handshake(conn net.Conn) error {
-	if err := WriteHello(conn, Hello{Token: d.opts.Token, Channels: d.opts.Channels}); err != nil {
-		return err
-	}
-	return ReadReply(conn)
+	return newConnSession(conn, 0), nil
 }

@@ -1,0 +1,44 @@
+# udp-tcp-tunnel-server configuration for the KCP transport.
+# Run: udp-tcp-tunnel-server -c server-kcp.yaml
+# Every key is described in
+# https://github.com/nerdneilsfield/udp-tcp-tunnel/blob/master/docs/configuration.md
+
+# KCP listens on a UDP port: open UDP 9000 in the firewall, not TCP.
+transport: kcp
+listen: ":9000"
+
+capture: socket
+udp_bind: "0.0.0.0"
+# interface: eth0   # for capture: afpacket
+
+queue_size: 1024
+max_payload: 65535
+stats_interval: 10s
+
+# Shared secret, at most 255 bytes. KCP is unencrypted unless kcp.key is set,
+# so without a key the token crosses the network in clear text.
+token: change-me
+
+# kcp.key, data_shards and parity_shards must match the client. Every other
+# value is local tuning; the values shown are the defaults.
+kcp:
+  key: change-me-too        # derives an AES-256 key (PBKDF2); empty = no encryption
+  nodelay: true
+  interval: 20ms
+  resend: 2
+  no_congestion: true
+  send_window: 1024
+  recv_window: 1024
+  mtu: 1350
+  data_shards: 0            # FEC off; set both shards to enable, e.g. 10 and 3
+  parity_shards: 0
+
+channels:
+  - id: 1
+    name: lidar-201
+    source_ip: 192.168.1.201
+    destination_port: 2368
+  - id: 2
+    name: lidar-202
+    source_ip: 192.168.1.202
+    destination_port: 2368

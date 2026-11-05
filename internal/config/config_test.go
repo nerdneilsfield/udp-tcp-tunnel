@@ -307,3 +307,122 @@ func assertErr(t *testing.T, err error, want string) {
 		t.Fatalf("error %q does not contain %q", err, want)
 	}
 }
+
+func TestTransportDefaultsAndValidation(t *testing.T) {
+	s := validServer()
+	if s.Transport != TransportTCP {
+		t.Fatalf("server default transport = %q", s.Transport)
+	}
+	c := validClient()
+	if c.Upstreams[0].Transport != TransportTCP {
+		t.Fatalf("client default transport = %q", c.Upstreams[0].Transport)
+	}
+
+	s.Transport = "udp"
+	assertErr(t, s.Validate(), `transport: "udp" must be`)
+	s.Transport = TransportQUIC
+	assertErr(t, s.Validate(), `tls: must be enabled for transport "quic"`)
+	s.TLS = ServerTLS{Enabled: true, CertFile: "c", KeyFile: "k"}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("quic with tls: %v", err)
+	}
+	s.Transport = TransportKCP
+	assertErr(t, s.Validate(), `tls: not supported with transport "kcp"`)
+	s.TLS = ServerTLS{}
+	if err := s.Validate(); err != nil {
+		t.Fatalf("kcp defaults: %v", err)
+	}
+	s.KCP = KCP{MTU: 100, DataShards: 3, Interval: time.Millisecond}
+	err := s.Validate()
+	assertErr(t, err, "kcp: mtu")
+	assertErr(t, err, "kcp: interval")
+	assertErr(t, err, "data_shards and parity_shards")
+}
+
+func TestKCPResolved(t *testing.T) {
+	k := KCP{}.Resolved()
+	if !*k.NoDelay || !*k.NoCongestion || k.Interval != DefaultKCPInterval || k.Resend != DefaultKCPResend ||
+		k.SendWindow != DefaultKCPWindow || k.RecvWindow != DefaultKCPWindow || k.MTU != DefaultKCPMTU {
+		t.Fatalf("unexpected defaults: %+v", k)
+	}
+	off := false
+	k = KCP{NoDelay: &off, MTU: 1200}.Resolved()
+	if *k.NoDelay || k.MTU != 1200 {
+		t.Fatalf("explicit values lost: %+v", k)
+	}
+}
+
+func TestClientTransportInheritance(t *testing.T) {
+	c := Client{
+		Transport: TransportKCP,
+		Token:     "t",
+		KCP:       KCP{Key: "k"},
+		Upstreams: []Upstream{
+			{Name: "a", Server: "h:1", Channels: []ClientChannel{{ID: 1, Target: "127.0.0.1:1"}}},
+			{
+				Name: "b", Server: "h:2", Transport: TransportQUIC,
+				TLS:      &ClientTLS{Enabled: true},
+				Channels: []ClientChannel{{ID: 1, Target: "127.0.0.1:2"}},
+			},
+			{Name: "c", Server: "h:3", Transport: TransportTCP, Channels: []ClientChannel{{ID: 1, Target: "127.0.0.1:3"}}},
+		},
+	}
+	c.SetDefaults()
+	mustNormalize(t, &c)
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	a, b, d := c.Upstreams[0], c.Upstreams[1], c.Upstreams[2]
+	if a.Transport != TransportKCP || a.KCP.Key != "k" {
+		t.Fatalf("a should inherit kcp: %+v", a)
+	}
+	if b.Transport != TransportQUIC || d.Transport != TransportTCP {
+		t.Fatalf("explicit transports lost: %q %q", b.Transport, d.Transport)
+	}
+}
+
+func TestClientTLSNotInheritedByKCP(t *testing.T) {
+	c := Client{
+		TLS: ClientTLS{Enabled: true},
+		Upstreams: []Upstream{
+			{Name: "tcp", Server: "h:1", Channels: []ClientChannel{{ID: 1, Target: "127.0.0.1:1"}}},
+			{Name: "kcp", Server: "h:2", Transport: TransportKCP, Channels: []ClientChannel{{ID: 1, Target: "127.0.0.1:2"}}},
+		},
+	}
+	c.SetDefaults()
+	mustNormalize(t, &c)
+	if err := c.Validate(); err != nil {
+		t.Fatalf("kcp upstream must ignore top-level tls: %v", err)
+	}
+	if c.Upstreams[0].TLS.Enabled != true || c.Upstreams[1].TLS.Enabled {
+		t.Fatalf("tls inheritance: %+v %+v", c.Upstreams[0].TLS, c.Upstreams[1].TLS)
+	}
+
+	c.Upstreams[1].TLS = &ClientTLS{Enabled: true}
+	assertErr(t, c.Validate(), `upstreams[1]: tls: not supported with transport "kcp"`)
+	c.Upstreams[1].Transport = TransportQUIC
+	c.Upstreams[1].TLS = &ClientTLS{}
+	assertErr(t, c.Validate(), `upstreams[1]: tls: must be enabled for transport "quic"`)
+}
+
+func TestLoadTransportExamples(t *testing.T) {
+	ex := func(name string) string { return filepath.Join("..", "..", "examples", name) }
+	for _, tc := range []struct{ file, transport string }{
+		{"server-quic.yaml", TransportQUIC},
+		{"server-kcp.yaml", TransportKCP},
+	} {
+		s, err := LoadServer(ex(tc.file))
+		if err != nil || s.Transport != tc.transport {
+			t.Fatalf("%s: transport %q, err %v", tc.file, s.Transport, err)
+		}
+	}
+	for _, tc := range []struct{ file, transport string }{
+		{"client-quic.yaml", TransportQUIC},
+		{"client-kcp.yaml", TransportKCP},
+	} {
+		c, err := LoadClient(ex(tc.file))
+		if err != nil || c.Upstreams[0].Transport != tc.transport {
+			t.Fatalf("%s: %+v, err %v", tc.file, c.Upstreams, err)
+		}
+	}
+}

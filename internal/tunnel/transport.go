@@ -3,8 +3,7 @@ package tunnel
 import "context"
 
 // Session is an authenticated, framed, bidirectional link between the
-// server and one client. The TCP implementation lives in tcp.go; a QUIC
-// datagram transport could implement the same interfaces.
+// server and one client. Implementations: tcp.go, kcp.go and quic.go.
 type Session interface {
 	// Send transmits one datagram on a channel. It is safe for concurrent use.
 	Send(channel uint16, payload []byte) error

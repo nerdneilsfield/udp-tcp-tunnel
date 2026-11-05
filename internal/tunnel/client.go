@@ -35,7 +35,7 @@ type Client struct {
 	stats     *stats.Registry
 }
 
-// NewClient builds a client using the TCP/TLS transport from cfg.
+// NewClient builds a client using each upstream's configured transport.
 func NewClient(cfg config.Client, log *zap.Logger) (*Client, error) {
 	cfg.SetDefaults()
 	if err := cfg.Normalize(); err != nil {
@@ -46,27 +46,11 @@ func NewClient(cfg config.Client, log *zap.Logger) (*Client, error) {
 	}
 	upstreams := make([]upstreamRuntime, 0, len(cfg.Upstreams))
 	for _, u := range cfg.Upstreams {
-		tlsCfg := config.ClientTLS{}
-		if u.TLS != nil {
-			tlsCfg = *u.TLS
-		}
-		tlsConf, err := ClientTLSConfig(tlsCfg, u.Server)
+		d, err := NewDialer(u)
 		if err != nil {
 			return nil, fmt.Errorf("upstream %q: %w", u.Name, err)
 		}
-		ids := make([]uint16, len(u.Channels))
-		for i, ch := range u.Channels {
-			ids[i] = ch.ID
-		}
-		upstreams = append(upstreams, upstreamRuntime{
-			cfg: u,
-			dialer: NewTCPDialer(TCPDialerOptions{
-				Addr:     u.Server,
-				Token:    u.Token,
-				Channels: ids,
-				TLS:      tlsConf,
-			}),
-		})
+		upstreams = append(upstreams, upstreamRuntime{cfg: u, dialer: d})
 	}
 	return newClient(cfg, upstreams, log), nil
 }
@@ -111,6 +95,7 @@ func NewClientWithDialers(cfg config.Client, dialers map[string]Dialer, log *zap
 func newClient(cfg config.Client, upstreams []upstreamRuntime, log *zap.Logger) *Client {
 	reg := stats.New("client", log)
 	for _, u := range upstreams {
+		reg.SetTransport(u.cfg.Name, u.cfg.Transport)
 		for _, ch := range u.cfg.Channels {
 			reg.AddUpstreamChannel(u.cfg.Name, ch.ID, ch.Name)
 		}

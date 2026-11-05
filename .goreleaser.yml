@@ -43,6 +43,10 @@ archives:
       - docs/*
       - src: examples/server.yaml
         dst: server.yaml
+      - src: examples/server-quic.yaml
+        dst: server-quic.yaml
+      - src: examples/server-kcp.yaml
+        dst: server-kcp.yaml
   - id: client
     ids: [client]
     formats: [tar.gz]
@@ -58,6 +62,10 @@ archives:
         dst: client.yaml
       - src: examples/client-multi.yaml
         dst: client-multi.yaml
+      - src: examples/client-quic.yaml
+        dst: client-quic.yaml
+      - src: examples/client-kcp.yaml
+        dst: client-kcp.yaml
 
 checksum:
   name_template: checksums.txt

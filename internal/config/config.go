@@ -36,6 +36,101 @@ const (
 	DefaultUpstreamName   = "default"
 )
 
+// Tunnel transports.
+const (
+	TransportTCP  = "tcp"
+	TransportQUIC = "quic"
+	TransportKCP  = "kcp"
+)
+
+// KCP defaults. The tuning is the "fast" profile of kcp-go.
+const (
+	DefaultKCPInterval   = 20 * time.Millisecond
+	DefaultKCPResend     = 2
+	DefaultKCPWindow     = 1024
+	DefaultKCPMTU        = 1350
+	minKCPInterval       = 10 * time.Millisecond
+	maxKCPInterval       = time.Second
+	minKCPMTU            = 200
+	maxKCPMTU            = 1500
+	maxKCPWindow         = 32768
+	maxKCPResend         = 10
+	maxKCPTotalFECShards = 255
+)
+
+// KCP tunes the KCP transport. Zero values select the defaults. Key, data_shards
+// and parity_shards must be identical on both ends; the other fields only
+// affect the local side.
+type KCP struct {
+	Key          string        `yaml:"key"`
+	NoDelay      *bool         `yaml:"nodelay"`
+	Interval     time.Duration `yaml:"interval"`
+	Resend       int           `yaml:"resend"`
+	NoCongestion *bool         `yaml:"no_congestion"`
+	SendWindow   int           `yaml:"send_window"`
+	RecvWindow   int           `yaml:"recv_window"`
+	MTU          int           `yaml:"mtu"`
+	DataShards   int           `yaml:"data_shards"`
+	ParityShards int           `yaml:"parity_shards"`
+}
+
+// Resolved returns a copy with every omitted field set to its default.
+func (k KCP) Resolved() KCP {
+	yes := true
+	if k.NoDelay == nil {
+		k.NoDelay = &yes
+	}
+	if k.NoCongestion == nil {
+		k.NoCongestion = &yes
+	}
+	if k.Interval == 0 {
+		k.Interval = DefaultKCPInterval
+	}
+	if k.Resend == 0 {
+		k.Resend = DefaultKCPResend
+	}
+	if k.SendWindow == 0 {
+		k.SendWindow = DefaultKCPWindow
+	}
+	if k.RecvWindow == 0 {
+		k.RecvWindow = DefaultKCPWindow
+	}
+	if k.MTU == 0 {
+		k.MTU = DefaultKCPMTU
+	}
+	return k
+}
+
+// validate reports problems with the resolved values, each prefixed by prefix.
+func (k KCP) validate(prefix string) []error {
+	k = k.Resolved()
+	var errs []error
+	add := func(format string, args ...any) {
+		errs = append(errs, fmt.Errorf(prefix+format, args...))
+	}
+	if k.Interval < minKCPInterval || k.Interval > maxKCPInterval {
+		add("interval: must be between %s and %s", minKCPInterval, maxKCPInterval)
+	}
+	if k.Resend < 0 || k.Resend > maxKCPResend {
+		add("resend: must be between 0 and %d", maxKCPResend)
+	}
+	if k.SendWindow < 1 || k.SendWindow > maxKCPWindow {
+		add("send_window: must be between 1 and %d", maxKCPWindow)
+	}
+	if k.RecvWindow < 1 || k.RecvWindow > maxKCPWindow {
+		add("recv_window: must be between 1 and %d", maxKCPWindow)
+	}
+	if k.MTU < minKCPMTU || k.MTU > maxKCPMTU {
+		add("mtu: must be between %d and %d", minKCPMTU, maxKCPMTU)
+	}
+	if (k.DataShards == 0) != (k.ParityShards == 0) || k.DataShards < 0 || k.ParityShards < 0 {
+		add("data_shards and parity_shards: set both to positive values, or neither")
+	} else if k.DataShards+k.ParityShards > maxKCPTotalFECShards {
+		add("data_shards + parity_shards: at most %d", maxKCPTotalFECShards)
+	}
+	return errs
+}
+
 // ServerTLS configures TLS on the tunnel listener.
 type ServerTLS struct {
 	Enabled  bool   `yaml:"enabled"`
@@ -72,8 +167,10 @@ type ClientChannel struct {
 type Upstream struct {
 	Name         string          `yaml:"name"`
 	Server       string          `yaml:"server"`
+	Transport    string          `yaml:"transport"`
 	Token        string          `yaml:"token"`
 	TLS          *ClientTLS      `yaml:"tls"`
+	KCP          *KCP            `yaml:"kcp"`
 	ReconnectMin time.Duration   `yaml:"reconnect_backoff_min"`
 	ReconnectMax time.Duration   `yaml:"reconnect_backoff_max"`
 	Channels     []ClientChannel `yaml:"channels"`
@@ -82,6 +179,7 @@ type Upstream struct {
 // Server is the configuration of udp-tcp-tunnel-server.
 type Server struct {
 	Listen        string          `yaml:"listen"`
+	Transport     string          `yaml:"transport"`
 	Capture       string          `yaml:"capture"`
 	UDPBind       string          `yaml:"udp_bind"`
 	Interface     string          `yaml:"interface"`
@@ -90,6 +188,7 @@ type Server struct {
 	StatsInterval time.Duration   `yaml:"stats_interval"`
 	Token         string          `yaml:"token"`
 	TLS           ServerTLS       `yaml:"tls"`
+	KCP           KCP             `yaml:"kcp"`
 	Channels      []ServerChannel `yaml:"channels"`
 }
 
@@ -101,14 +200,16 @@ type Server struct {
 //
 // The two shapes are mutually exclusive. Normalize turns the single-upstream
 // shape into one Upstream named "default" and fills omitted per-upstream
-// token, TLS and backoff from the top-level defaults.
+// transport, token, TLS, KCP and backoff from the top-level defaults.
 type Client struct {
 	Server        string          `yaml:"server"`
+	Transport     string          `yaml:"transport"`
 	ReconnectMin  time.Duration   `yaml:"reconnect_backoff_min"`
 	ReconnectMax  time.Duration   `yaml:"reconnect_backoff_max"`
 	StatsInterval time.Duration   `yaml:"stats_interval"`
 	Token         string          `yaml:"token"`
 	TLS           ClientTLS       `yaml:"tls"`
+	KCP           KCP             `yaml:"kcp"`
 	Channels      []ClientChannel `yaml:"channels"`
 	Upstreams     []Upstream      `yaml:"upstreams"`
 }
@@ -160,6 +261,9 @@ func (s *Server) SetDefaults() {
 	if s.Listen == "" {
 		s.Listen = DefaultListen
 	}
+	if s.Transport == "" {
+		s.Transport = TransportTCP
+	}
 	if s.Capture == "" {
 		s.Capture = CaptureSocket
 	}
@@ -179,6 +283,9 @@ func (s *Server) SetDefaults() {
 
 // SetDefaults fills omitted optional top-level fields.
 func (c *Client) SetDefaults() {
+	if c.Transport == "" {
+		c.Transport = TransportTCP
+	}
 	if c.ReconnectMin == 0 {
 		c.ReconnectMin = DefaultBackoffInitial
 	}
@@ -191,7 +298,7 @@ func (c *Client) SetDefaults() {
 }
 
 // Normalize turns the single-upstream shape into Upstreams and applies
-// top-level token, TLS and backoff defaults to each upstream entry.
+// top-level transport, token, TLS, KCP and backoff defaults to each upstream entry.
 func (c *Client) Normalize() error {
 	hasServer := c.Server != ""
 	hasChannels := len(c.Channels) > 0
@@ -209,11 +316,14 @@ func (c *Client) Normalize() error {
 	}
 	if !hasUpstreams {
 		tls := c.TLS
+		kcp := c.KCP
 		c.Upstreams = []Upstream{{
 			Name:         DefaultUpstreamName,
 			Server:       c.Server,
+			Transport:    c.Transport,
 			Token:        c.Token,
 			TLS:          &tls,
+			KCP:          &kcp,
 			ReconnectMin: c.ReconnectMin,
 			ReconnectMax: c.ReconnectMax,
 			Channels:     c.Channels,
@@ -225,9 +335,21 @@ func (c *Client) Normalize() error {
 		if u.Token == "" {
 			u.Token = c.Token
 		}
+		if u.Transport == "" {
+			u.Transport = c.Transport
+		}
 		if u.TLS == nil {
+			// KCP has no TLS layer; do not let a top-level block meant for
+			// other upstreams enable TLS validation on it.
 			tls := c.TLS
+			if u.Transport == TransportKCP {
+				tls = ClientTLS{}
+			}
 			u.TLS = &tls
+		}
+		if u.KCP == nil {
+			kcp := c.KCP
+			u.KCP = &kcp
 		}
 		if u.ReconnectMin == 0 {
 			u.ReconnectMin = c.ReconnectMin
@@ -248,6 +370,10 @@ func (s *Server) Validate() error {
 
 	if err := checkHostPort(s.Listen, false); err != nil {
 		add("listen: %v", err)
+	}
+	errs = append(errs, validateTransport("", s.Transport, s.TLS.Enabled)...)
+	if s.Transport == TransportKCP {
+		errs = append(errs, s.KCP.validate("kcp: ")...)
 	}
 	switch s.Capture {
 	case CaptureSocket:
@@ -336,6 +462,10 @@ func (c *Client) Validate() error {
 		if u.TLS != nil {
 			tls = *u.TLS
 		}
+		errs = append(errs, validateTransport(prefix+": ", u.Transport, tls.Enabled)...)
+		if u.Transport == TransportKCP && u.KCP != nil {
+			errs = append(errs, u.KCP.validate(prefix+": kcp: ")...)
+		}
 		if !tls.Enabled && (tls.CAFile != "" || tls.ServerName != "" || tls.InsecureSkipVerify) {
 			add("%s: tls: options are set but tls.enabled is false", prefix)
 		}
@@ -344,6 +474,26 @@ func (c *Client) Validate() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// validateTransport checks the transport name and its TLS requirement.
+func validateTransport(prefix, transport string, tlsEnabled bool) []error {
+	switch transport {
+	case TransportTCP:
+		return nil
+	case TransportQUIC:
+		if !tlsEnabled {
+			return []error{fmt.Errorf("%stls: must be enabled for transport %q", prefix, TransportQUIC)}
+		}
+		return nil
+	case TransportKCP:
+		if tlsEnabled {
+			return []error{fmt.Errorf("%stls: not supported with transport %q; set kcp.key to encrypt", prefix, TransportKCP)}
+		}
+		return nil
+	default:
+		return []error{fmt.Errorf("%stransport: %q must be %q, %q or %q", prefix, transport, TransportTCP, TransportQUIC, TransportKCP)}
+	}
 }
 
 func validateServerChannels(channels []ServerChannel) []error {

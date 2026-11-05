@@ -1,0 +1,37 @@
+# udp-tcp-tunnel-client configuration for the KCP transport.
+# Run: udp-tcp-tunnel-client -c client-kcp.yaml
+# Every key is described in
+# https://github.com/nerdneilsfield/udp-tcp-tunnel/blob/master/docs/configuration.md
+
+transport: kcp
+server: "192.168.1.10:9000"      # UDP port of the KCP server
+
+reconnect_backoff_min: 1s
+reconnect_backoff_max: 30s
+stats_interval: 10s
+
+# KCP is unencrypted unless kcp.key is set, so without a key the token
+# crosses the network in clear text. There is no tls for KCP.
+token: change-me
+
+# kcp.key, data_shards and parity_shards must match the server. Every other
+# value is local tuning; the values shown are the defaults.
+kcp:
+  key: change-me-too
+  nodelay: true
+  interval: 20ms
+  resend: 2
+  no_congestion: true
+  send_window: 1024
+  recv_window: 1024
+  mtu: 1350
+  data_shards: 0
+  parity_shards: 0
+
+channels:
+  - id: 1
+    name: lidar-201
+    target: "127.0.0.1:2368"
+  - id: 2
+    name: lidar-202
+    target: "127.0.0.1:2369"

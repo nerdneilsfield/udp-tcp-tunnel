@@ -100,20 +100,31 @@ func must(t *testing.T, err error) {
 // TestEndToEnd runs a real server (socket capture) and client in-process and
 // checks that two channels deliver identical payloads with boundaries intact.
 func TestEndToEnd(t *testing.T) {
-	for _, useTLS := range []bool{false, true} {
-		t.Run(fmt.Sprintf("tls=%v", useTLS), func(t *testing.T) { runEndToEnd(t, useTLS) })
+	cases := []struct {
+		name      string
+		transport string
+		tls       bool
+	}{
+		{"tcp", config.TransportTCP, false},
+		{"tcp+tls", config.TransportTCP, true},
+		{"quic", config.TransportQUIC, true},
+		{"kcp", config.TransportKCP, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) { runEndToEnd(t, c.transport, c.tls) })
 	}
 }
 
-func runEndToEnd(t *testing.T, useTLS bool) {
+func runEndToEnd(t *testing.T, transport string, useTLS bool) {
 	port1, port2 := freeUDPPort(t), freeUDPPort(t)
 	target1, target2 := listenTarget(t), listenTarget(t)
 
 	srvCfg := config.Server{
-		Listen:  "127.0.0.1:0",
-		Capture: config.CaptureSocket,
-		UDPBind: "127.0.0.1",
-		Token:   "e2e-token",
+		Listen:    "127.0.0.1:0",
+		Transport: transport,
+		Capture:   config.CaptureSocket,
+		UDPBind:   "127.0.0.1",
+		Token:     "e2e-token",
 		Channels: []config.ServerChannel{
 			{ID: 1, Name: "lidar-1", SourceIP: "127.0.0.1", DestinationPort: port1},
 			{ID: 2, Name: "lidar-2", DestinationPort: port2},
@@ -123,6 +134,7 @@ func runEndToEnd(t *testing.T, useTLS bool) {
 	srvCfg.StatsInterval = time.Hour
 
 	cliCfg := config.Client{
+		Transport:     transport,
 		ReconnectMin:  20 * time.Millisecond,
 		ReconnectMax:  100 * time.Millisecond,
 		StatsInterval: time.Hour,
@@ -138,6 +150,11 @@ func runEndToEnd(t *testing.T, useTLS bool) {
 		certFile, keyFile := writeSelfSignedCert(t)
 		srvCfg.TLS = config.ServerTLS{Enabled: true, CertFile: certFile, KeyFile: keyFile}
 		cliCfg.TLS = config.ClientTLS{Enabled: true, CAFile: certFile}
+	}
+
+	if transport == config.TransportKCP {
+		srvCfg.KCP = config.KCP{Key: "e2e-key"}
+		cliCfg.KCP = config.KCP{Key: "e2e-key"}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -184,16 +201,26 @@ func runEndToEnd(t *testing.T, useTLS bool) {
 	_, err = send1.Write(big)
 	must(t, err)
 
+	// QUIC sends small payloads as datagrams and larger ones on the stream,
+	// so only the set of payloads is guaranteed, not their order.
+	ordered := transport != config.TransportQUIC
 	check := func(name string, target *net.UDPConn, want []message) {
 		buf := make([]byte, 70000)
+		remaining := make(map[string]int)
+		for _, w := range want {
+			remaining[string(w.payload)]++
+		}
 		for i, w := range want {
 			_ = target.SetReadDeadline(time.Now().Add(5 * time.Second))
 			n, _, err := target.ReadFromUDP(buf)
 			if err != nil {
 				t.Fatalf("%s datagram %d: %v", name, i, err)
 			}
-			if !bytes.Equal(buf[:n], w.payload) {
+			if ordered && !bytes.Equal(buf[:n], w.payload) {
 				t.Fatalf("%s datagram %d: got %d bytes, want %d (content differs)", name, i, n, len(w.payload))
+			}
+			if remaining[string(buf[:n])]--; remaining[string(buf[:n])] < 0 {
+				t.Fatalf("%s datagram %d: unexpected payload of %d bytes", name, i, n)
 			}
 		}
 	}

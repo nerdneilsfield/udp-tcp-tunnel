@@ -1,0 +1,35 @@
+# udp-tcp-tunnel-server configuration for the QUIC transport.
+# Run: udp-tcp-tunnel-server -c server-quic.yaml
+# Every key is described in
+# https://github.com/nerdneilsfield/udp-tcp-tunnel/blob/master/docs/configuration.md
+
+# QUIC listens on a UDP port: open UDP 9000 in the firewall, not TCP.
+transport: quic
+listen: ":9000"
+
+capture: socket
+udp_bind: "0.0.0.0"
+# interface: eth0   # for capture: afpacket
+
+queue_size: 1024
+max_payload: 65535
+stats_interval: 10s
+
+# Shared secret, at most 255 bytes. It travels inside the encrypted session.
+token: change-me
+
+# QUIC always uses TLS 1.3, so tls is mandatory.
+tls:
+  enabled: true
+  cert_file: /etc/udp-tcp-tunnel/server.crt
+  key_file: /etc/udp-tcp-tunnel/server.key
+
+channels:
+  - id: 1
+    name: lidar-201
+    source_ip: 192.168.1.201
+    destination_port: 2368
+  - id: 2
+    name: lidar-202
+    source_ip: 192.168.1.202
+    destination_port: 2368

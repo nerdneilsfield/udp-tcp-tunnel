@@ -114,3 +114,31 @@ func TestReasonNames(t *testing.T) {
 		}
 	}
 }
+
+func TestTransportLabel(t *testing.T) {
+	core, logs := observer.New(zap.InfoLevel)
+	reg := New("client", zap.New(core))
+	reg.SetTransport("east", "quic")
+	reg.AddUpstreamChannel("east", 1, "a")
+	reg.AddUpstreamChannel("west", 1, "b") // no transport recorded
+	reg.Log(time.Now())
+
+	var withLabel, without int
+	for _, e := range logs.All() {
+		switch e.ContextMap()["upstream"] {
+		case "east":
+			if e.ContextMap()["transport"] != "quic" {
+				t.Fatalf("east %q line lacks transport: %v", e.Message, e.ContextMap())
+			}
+			withLabel++
+		case "west":
+			if _, ok := e.ContextMap()["transport"]; ok {
+				t.Fatalf("west line has transport: %v", e.ContextMap())
+			}
+			without++
+		}
+	}
+	if withLabel != 2 || without != 2 {
+		t.Fatalf("got %d east and %d west lines, want 2 each", withLabel, without)
+	}
+}
