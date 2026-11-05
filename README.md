@@ -4,21 +4,22 @@
 [![Release](https://img.shields.io/github/v/release/nerdneilsfield/udp-tcp-tunnel?sort=semver)](https://github.com/nerdneilsfield/udp-tcp-tunnel/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-udp-tcp-tunnel carries UDP datagrams from one host to another over a single TCP connection and sends each datagram, byte for byte, to a local UDP address on the far side.
+udp-tcp-tunnel carries UDP datagrams from one host to another over a single TCP, QUIC or KCP session and sends each datagram, byte for byte, to a local UDP address on the far side.
 
 ## Highlights
 
-- One TCP connection carries many channels. A channel selects datagrams by destination port and, optionally, by source IP address and source port. One client process can dial several tunnel servers at once.
+- One session carries many channels. A channel selects datagrams by destination port and, optionally, by source IP address and source port. One client process can dial several tunnel servers at once.
 - Datagram boundaries are kept. Each datagram travels as one length-prefixed frame and leaves the client as one UDP datagram.
 - On Linux, the server can capture packets with AF_PACKET while another program keeps receiving them on the same port.
 - AF_PACKET capture uses a TPACKET_V3 ring from gopacket and a classic BPF filter generated in Go. It needs neither cgo nor libpcap.
+- Three transports: `tcp` (default, optionally with TLS), `quic` (TLS 1.3, UDP payloads in QUIC datagrams) and `kcp` (KCP over UDP, optional encryption key and FEC). Each client upstream picks its own.
 - A shared token and TLS 1.2 or later can protect the tunnel.
 - Both sides log packet rates, byte counts and seven named drop counters for every channel at a fixed interval.
 - The client is released for Linux, macOS and Windows. It does not link the capture code.
 
 ## Overview
 
-The server (`udp-tcp-tunnel-server`) obtains UDP datagrams on the capture host, assigns each one to a channel and writes it to the TCP connection of the client. The client (`udp-tcp-tunnel-client`) connects to one or more servers, reads the frames and sends each payload from its own UDP socket to the `target` of that channel. Each upstream keeps its own session and reconnect loop.
+The server (`udp-tcp-tunnel-server`) obtains UDP datagrams on the capture host, assigns each one to a channel and writes it to the session of the client. The client (`udp-tcp-tunnel-client`) connects to one or more servers, reads the frames and sends each payload from its own UDP socket to the `target` of that channel. Each upstream keeps its own session and reconnect loop.
 
 The server obtains datagrams in one of two capture modes:
 
@@ -229,6 +230,20 @@ Use `afpacket` capture when another program on the server host must keep receivi
 
 Without the capability, startup fails with `afpacket capture on "eth0" (needs root or CAP_NET_RAW): ...`. Capabilities set with `setcap` are lost when the binary file is replaced, so repeat the command after each upgrade. [docs/capture-modes.md](docs/capture-modes.md) describes which packets the filter accepts.
 
+### Choose a transport
+
+`transport` selects how the server and the client talk: `tcp` (default), `quic` or `kcp`. Set it on the server and on every client upstream that connects to it. The client also accepts a top-level `transport` that upstreams inherit.
+
+| Transport | Carried over | Encryption | Loss behavior |
+| --- | --- | --- | --- |
+| `tcp` | TCP, optional TLS 1.2+ | `tls` | Reliable, ordered; head-of-line blocking across channels |
+| `quic` | UDP, QUIC datagrams | TLS 1.3, mandatory | Datagrams are not retransmitted; payloads above the datagram limit use the reliable stream |
+| `kcp` | UDP | None unless `kcp.key` is set | Reliable, ordered like TCP, with faster retransmission; optional FEC |
+
+`quic` and `kcp` use UDP, so open the server port for UDP in the firewall (for example `ufw allow 9000/udp`), not for TCP. See [examples/server-quic.yaml](examples/server-quic.yaml), [examples/client-quic.yaml](examples/client-quic.yaml), [examples/server-kcp.yaml](examples/server-kcp.yaml) and [examples/client-kcp.yaml](examples/client-kcp.yaml). The wire details are in [docs/protocol.md](docs/protocol.md).
+
+KCP sends the token and all data in clear text unless `kcp.key` is set on both sides. The key gives confidentiality only: KCP does not authenticate packets. Use `quic` on an untrusted network.
+
 ### Protect the tunnel
 
 Without TLS, the token and all data cross the network in clear text. When the server listens on an address that is not loopback and TLS or the token is missing, it logs this warning at startup:
@@ -266,13 +281,16 @@ Server (`server.yaml`):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `listen` | `:9000` | TCP address for the client connection |
+| `listen` | `:9000` | Address for the client connection (TCP or UDP, by `transport`) |
+| `transport` | `tcp` | `tcp`, `quic` or `kcp` |
 | `capture` | `socket` | `socket` or `afpacket` |
 | `udp_bind` | `0.0.0.0` | Address for the UDP ports in `socket` mode |
 | `interface` | none | Interface to capture on in `afpacket` mode |
 | `queue_size` | `1024` | Datagrams that can wait for the TCP writer |
 | `stats_interval` | `10s` | Interval between stats log lines |
 | `token` | empty | Shared secret that the client must present |
+| `tls` | off | Certificate and key; mandatory for `quic`, not allowed for `kcp` |
+| `kcp` | defaults | Tuning, FEC and `key` for `transport: kcp` |
 | `channels` | none | At least one channel with `id` and `destination_port` |
 
 Client (`client.yaml`):
@@ -280,11 +298,14 @@ Client (`client.yaml`):
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `server` | none | Server address as `host:port` (single-upstream shape) |
+| `transport` | `tcp` | `tcp`, `quic` or `kcp`; upstreams inherit it |
 | `upstreams` | none | List of named servers to dial in parallel (multi-upstream shape; mutually exclusive with `server`/`channels`) |
 | `reconnect_backoff_min` | `1s` | First delay before a reconnect |
 | `reconnect_backoff_max` | `30s` | Longest delay before a reconnect |
 | `stats_interval` | `10s` | Interval between stats log lines |
 | `token` | empty | Default tunnel token; upstreams may override |
+| `tls` | off | Default TLS settings; upstreams may override |
+| `kcp` | defaults | Default KCP settings; upstreams may override |
 | `channels` | none | Channels for the single-upstream shape |
 
 Use [examples/client-multi.yaml](examples/client-multi.yaml) when one process should dial several servers. Channel IDs are unique per upstream only.
@@ -295,6 +316,8 @@ Unknown keys are rejected, so a misspelled key stops the program at startup.
 
 - **The source address is not preserved.** The receiver sees every datagram of a channel coming from the client host, from one UDP port that the client picks when it starts. A receiver that filters by sender address must be configured for the client address.
 - **A vanished TCP peer used to stall for minutes.** Writes can succeed into the kernel send buffer while retransmits run under `tcp_retries2` (often ~8–15 minutes). The tunnel now sets Linux `TCP_USER_TIMEOUT` to 30s and short keepalive probes so the session fails fast and the client reconnects.
+- **QUIC may lose and reorder datagrams.** QUIC datagrams are unreliable, so a datagram lost on the network is not retransmitted, and a payload above the path's datagram limit (about 1200 bytes at first, up to about 1450 after path MTU discovery) is sent on the reliable stream, which can arrive out of order relative to datagrams. Neither case is counted in the stats.
+- **KCP is unencrypted by default.** Without `kcp.key` the token and the data are readable on the path. With a key they are encrypted but not authenticated.
 - **TCP adds head-of-line blocking.** All channels share one TCP connection. A lost TCP segment delays every channel until it is retransmitted. When the connection cannot keep up, the server queue fills and the newest datagrams are dropped as `queue_full`.
 - **macOS limits outgoing datagram size.** macOS caps a UDP datagram at the `net.inet.udp.maxdgram` sysctl, which is 9216 bytes by default. A client on macOS cannot send a larger payload and counts it as `write_error`. Raise the limit with `sudo sysctl -w net.inet.udp.maxdgram=65535` if the tunnel carries larger datagrams.
 - **IP fragments are not reassembled.** In `afpacket` mode the server counts IPv4 first fragments as `fragment` and drops them. The kernel filter drops later IPv4 fragments and all IPv6 fragments without counting them. In `socket` mode the kernel reassembles fragments before the server reads them.
@@ -306,7 +329,7 @@ Unknown keys are rejected, so a misspelled key stops the program at startup.
 
 - [docs/configuration.md](docs/configuration.md): every configuration key, default and validation error
 - [docs/capture-modes.md](docs/capture-modes.md): `socket` and `afpacket` capture, the kernel filter and privileges
-- [docs/protocol.md](docs/protocol.md): the handshake and frame format on the TCP connection
+- [docs/protocol.md](docs/protocol.md): the handshake and frame format, and how each transport carries them
 - [docs/stats.md](docs/stats.md): the stats log lines and the drop counters
 
 ## Contributing
@@ -348,7 +371,7 @@ The code is organized as follows:
 | `internal/capture` | `socket` and `afpacket` capture, BPF filter and packet parser |
 | `internal/routing` | Channel matching |
 | `internal/server` | Queue, client session and drop accounting on the server |
-| `internal/tunnel` | Wire protocol, TCP and TLS transport, client |
+| `internal/tunnel` | Wire protocol, TCP/TLS, QUIC and KCP transports, client |
 | `internal/stats` | Counters and stats logging |
 
-The transport is defined by the `Session`, `Listener` and `Dialer` interfaces in `internal/tunnel/transport.go`, so a transport other than TCP can be added without changing the server and client logic.
+The transport is defined by the `Session`, `Listener` and `Dialer` interfaces in `internal/tunnel/transport.go`, so a transport can be added without changing the server and client logic. TCP, KCP and QUIC share the handshake in `handshake.go`; TCP and KCP also share the stream session in `session.go`.

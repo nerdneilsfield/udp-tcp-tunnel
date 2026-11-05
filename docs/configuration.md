@@ -41,13 +41,34 @@ Addresses written as `host:port` must have a numeric port between 1 and 65535. A
 
 ### listen
 
-TCP address on which the server accepts the client.
+Address on which the server accepts the client: a TCP port for `transport: tcp`, a UDP port for `quic` and `kcp`.
 
 - Type: `host:port` string. The host can be empty to listen on all addresses.
 - Default: `:9000`
 - Error: `listen: <address message>`
 
+With `quic` or `kcp`, open the port for UDP in the firewall, not TCP.
+
 The server logs a warning at startup when this address is not loopback and either TLS or the token is missing. See [Protect the tunnel](../README.md#protect-the-tunnel).
+
+### transport
+
+How the server talks to the client. The client must use the same transport for this server. See [protocol.md](protocol.md) for what each transport puts on the wire.
+
+- Type: string, `tcp`, `quic` or `kcp`
+- Default: `tcp`
+- Error: `transport: "<value>" must be "tcp", "quic" or "kcp"`
+
+| Value | Transport | `tls` | `kcp` |
+| --- | --- | --- | --- |
+| `tcp` | TCP | Optional | Ignored |
+| `quic` | QUIC over UDP, TLS 1.3 | Required | Ignored |
+| `kcp` | KCP over UDP | Must be off | Used |
+
+Errors:
+
+- `tls: must be enabled for transport "quic"`
+- `tls: not supported with transport "kcp"; set kcp.key to encrypt`
 
 ### capture
 
@@ -77,7 +98,7 @@ Network interface that `afpacket` mode captures on, for example `eth0`.
 
 ### queue_size
 
-Number of datagrams that can wait between capture and the TCP writer. When the queue is full, the newest datagram is dropped and counted as `queue_full`.
+Number of datagrams that can wait between capture and the session writer. When the queue is full, the newest datagram is dropped and counted as `queue_full`.
 
 - Type: integer
 - Default: `1024`. A value of `0` selects the default.
@@ -111,11 +132,11 @@ Shared secret that the client must present during the handshake. The server comp
 - Range: at most 255 bytes
 - Error: `token: longer than 255 bytes`
 
-Without TLS the token crosses the network in clear text.
+Without TLS the token crosses the network in clear text. With `transport: kcp` the token is in clear text unless `kcp.key` is set.
 
 ### tls
 
-TLS settings for the tunnel. The server accepts TLS 1.2 and later.
+TLS settings for the tunnel. With `tcp` the server accepts TLS 1.2 and later. With `quic` TLS is mandatory and the version is 1.3. With `kcp` TLS is not available.
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -129,6 +150,31 @@ Errors:
 - `tls: cert_file/key_file are set but tls.enabled is false`
 
 The certificate and key are loaded when the server starts. A file that cannot be loaded stops the server with `load tls certificate: <reason>`.
+
+### kcp
+
+Settings of the KCP transport. They are validated only when `transport` is `kcp`. Every field is optional.
+
+| Key | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `kcp.key` | string | empty | Passphrase. A non-empty value encrypts the session with AES-256; the key is derived with PBKDF2-HMAC-SHA256. Must be identical on both ends. Never logged. |
+| `kcp.nodelay` | boolean | `true` | KCP no-delay mode: lower retransmission timeout |
+| `kcp.interval` | duration | `20ms` | Internal update interval, 10ms to 1s |
+| `kcp.resend` | integer | `2` | Fast resend after this many skipped ACKs, 0 to 10 (0 disables) |
+| `kcp.no_congestion` | boolean | `true` | Turn off KCP congestion control |
+| `kcp.send_window` | integer | `1024` | Send window in packets, 1 to 32768 |
+| `kcp.recv_window` | integer | `1024` | Receive window in packets, 1 to 32768 |
+| `kcp.mtu` | integer | `1350` | Packet size in bytes, 200 to 1500, including KCP overhead |
+| `kcp.data_shards` | integer | `0` | Forward error correction: data shards per group. Must match the other end. |
+| `kcp.parity_shards` | integer | `0` | FEC parity shards per group. Set both shard counts or neither; their sum is at most 255. Must match the other end. |
+
+The defaults are the fast mode of kcp-go (`nodelay=1, interval=20, resend=2, nc=1`). `key`, `data_shards` and `parity_shards` change the packet format and must be equal on both ends; the other values tune the local end only. `no_congestion: true` sends at full speed regardless of loss, which suits a dedicated link and can hurt a shared one. FEC with 10 data and 3 parity shards adds 30% bandwidth.
+
+Without `key`, KCP is not encrypted: the token and all datagrams cross the network in clear text. With a key the session is encrypted, but KCP does not authenticate packets, so the key does not replace the `token` and is weaker than `quic`.
+
+A session is dropped after 30 seconds without a frame from the peer. Both ends send a heartbeat every 10 seconds when idle. These two values are not configurable.
+
+Errors, prefixed with `kcp: `: `interval: must be between 10ms and 1s`, `resend: must be between 0 and 10`, `send_window: must be between 1 and 32768`, `recv_window: ...`, `mtu: must be between 200 and 1500`, `data_shards and parity_shards: set both to positive values, or neither`, `data_shards + parity_shards: at most 255`.
 
 ### channels
 
@@ -162,7 +208,7 @@ The client accepts two mutually exclusive shapes:
 1. **Single upstream.** Set top-level `server` and `channels`. `Normalize` turns this into one upstream named `default`.
 2. **Multiple upstreams.** Set `upstreams` to a non-empty list. Do not set top-level `server` or `channels`.
 
-Top-level `token`, `tls`, `reconnect_backoff_min` and `reconnect_backoff_max` are shared defaults. In the multi-upstream shape, an upstream that omits `token`, `tls` or a reconnect backoff value inherits the top-level value. `stats_interval` is always top-level.
+Top-level `transport`, `token`, `tls`, `kcp`, `reconnect_backoff_min` and `reconnect_backoff_max` are shared defaults. In the multi-upstream shape, an upstream that omits one of them inherits the top-level value. `stats_interval` is always top-level.
 
 Mutual-exclusion errors:
 
@@ -176,6 +222,12 @@ Address of the server. Used only in the single-upstream shape.
 - Type: `host:port` string. The host is required.
 - Default: none
 - Error after normalize: `upstreams[0]: server: <address message>`
+
+### transport
+
+Transport used to reach the server: `tcp` (default), `quic` or `kcp`, as described under the [server key](#transport). In the single-upstream shape it applies to the one upstream. In the multi-upstream shape it is the default for upstreams that omit `transport`, so one client can mix transports. Reconnect and backoff behave the same for all of them.
+
+Errors, with `upstreams[<i>]: ` in front: `transport: "<value>" must be "tcp", "quic" or "kcp"`, `tls: must be enabled for transport "quic"`, `tls: not supported with transport "kcp"; set kcp.key to encrypt`.
 
 ### reconnect_backoff_min and reconnect_backoff_max
 
@@ -199,18 +251,18 @@ Same as the [server key](#stats_interval). Default `10s`. One reporter covers ev
 
 ### token
 
-Shared secret presented during the handshake. At most 255 bytes. In the single-upstream shape it is the tunnel token. In the multi-upstream shape it is the default inherited by an upstream that omits `token`. When the tokens differ, the server rejects the handshake and the client logs `tunnel: authentication failed` and retries that upstream.
+Shared secret presented during the handshake. At most 255 bytes. With `kcp` and no `kcp.key`, it is sent in clear text. In the single-upstream shape it is the tunnel token. In the multi-upstream shape it is the default inherited by an upstream that omits `token`. When the tokens differ, the server rejects the handshake and the client logs `tunnel: authentication failed` and retries that upstream.
 
 ### tls
 
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
-| `tls.enabled` | boolean | `false` | Connect over TLS 1.2 or later |
+| `tls.enabled` | boolean | `false` | Connect over TLS 1.2 or later (`tcp`); QUIC always uses TLS 1.3 and requires `true` |
 | `tls.ca_file` | path | system roots | PEM file with the CA certificates that verify the server. When set, it replaces the system roots. |
 | `tls.server_name` | string | host part of that upstream's `server` | Name expected in the server certificate |
 | `tls.insecure_skip_verify` | boolean | `false` | Skip certificate verification. Use only for testing. |
 
-In the multi-upstream shape, omit the upstream `tls` key to inherit the top-level block. Setting `tls:` on an upstream replaces the top-level block for that upstream.
+In the multi-upstream shape, omit the upstream `tls` key to inherit the top-level block. Setting `tls:` on an upstream replaces the top-level block for that upstream. An upstream with `transport: kcp` that omits `tls` does not inherit an enabled top-level block, so a client can mix `tcp`/`quic` upstreams that use the top-level TLS with `kcp` ones. For `quic` the `ca_file`, `server_name` and `insecure_skip_verify` keys have the same meaning as for `tcp`.
 
 Errors:
 
@@ -218,6 +270,10 @@ Errors:
 - `upstreams[<i>]: tls: options are set but tls.enabled is false`
 - `read tls ca_file: <reason>` at startup, when the file cannot be read
 - `tls ca_file contains no certificates` at startup, when the file holds no PEM certificate
+
+### kcp
+
+Same keys as the [server `kcp` block](#kcp). `key`, `data_shards` and `parity_shards` must match the server. In the multi-upstream shape, an upstream that omits `kcp` inherits the top-level block; setting `kcp:` on an upstream replaces it as a whole. The block is validated only for upstreams whose transport is `kcp`; errors carry the prefix `upstreams[<i>]: kcp: `.
 
 ### channels
 
@@ -246,13 +302,15 @@ List of tunnel servers to dial in parallel. Required for the multi-upstream shap
 | --- | --- | --- | --- |
 | `name` | string | none | Unique label for logs and stats (`upstream=<name>`). Required. |
 | `server` | `host:port` | none | Address of that tunnel server. Required. |
+| `transport` | string | top-level `transport` | `tcp`, `quic` or `kcp` |
 | `token` | string | top-level `token` | Handshake token for this upstream |
-| `tls` | object | top-level `tls` | TLS settings for this upstream. Omit the key to inherit. |
+| `tls` | object | top-level `tls` | TLS settings for this upstream. Omit the key to inherit (not inherited by `kcp` upstreams). |
+| `kcp` | object | top-level `kcp` | KCP settings for this upstream. Omit the key to inherit. |
 | `reconnect_backoff_min` | duration | top-level value | First reconnect delay for this upstream |
 | `reconnect_backoff_max` | duration | top-level value | Longest reconnect delay for this upstream |
 | `channels` | list | none | Channels for this upstream. At least one. Channel IDs are unique per upstream only. |
 
-Each upstream keeps its own TCP (or TLS) session and reconnect loop. Canceling the process stops every upstream.
+Each upstream keeps its own session (TCP, QUIC or KCP) and reconnect loop. Canceling the process stops every upstream.
 
 Errors, where `<i>` is the upstream index and `<j>` a channel index:
 
@@ -263,6 +321,31 @@ Errors, where `<i>` is the upstream index and `<j>` a channel index:
 - `upstreams[<i>]: token: longer than 255 bytes`
 - `upstreams[<i>]: channels: ...` (same channel errors as above)
 
+## Examples
+
+A client that mixes transports. `east` uses QUIC with the shared TLS block, `west` uses KCP and does not inherit that block, and `lab` stays on TCP:
+
+```yaml
+token: change-me
+tls:
+  enabled: true
+  ca_file: /etc/udp-tcp-tunnel/ca.crt
+kcp:
+  key: change-me-too
+upstreams:
+  - name: east
+    transport: quic
+    server: "192.168.1.10:9000"
+    channels: [{id: 1, target: "127.0.0.1:2368"}]
+  - name: west
+    transport: kcp
+    server: "192.168.1.11:9000"
+    channels: [{id: 1, target: "127.0.0.1:2369"}]
+  - name: lab
+    server: "192.168.1.12:9000"
+    channels: [{id: 1, target: "127.0.0.1:2370"}]
+```
+
 ## Example files
 
-[examples/server.yaml](../examples/server.yaml), [examples/client.yaml](../examples/client.yaml) and [examples/client-multi.yaml](../examples/client-multi.yaml) are complete commented configurations. Release archives include the matching single-upstream file next to each binary.
+[examples/server.yaml](../examples/server.yaml), [examples/client.yaml](../examples/client.yaml) and [examples/client-multi.yaml](../examples/client-multi.yaml) are complete commented configurations for TCP. [examples/server-quic.yaml](../examples/server-quic.yaml) and [examples/client-quic.yaml](../examples/client-quic.yaml) use QUIC; [examples/server-kcp.yaml](../examples/server-kcp.yaml) and [examples/client-kcp.yaml](../examples/client-kcp.yaml) use KCP. Release archives include the matching example files next to each binary.
