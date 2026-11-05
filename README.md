@@ -8,7 +8,7 @@ udp-tcp-tunnel carries UDP datagrams from one host to another over a single TCP 
 
 ## Highlights
 
-- One TCP connection carries many channels. A channel selects datagrams by destination port and, optionally, by source IP address and source port.
+- One TCP connection carries many channels. A channel selects datagrams by destination port and, optionally, by source IP address and source port. One client process can dial several tunnel servers at once.
 - Datagram boundaries are kept. Each datagram travels as one length-prefixed frame and leaves the client as one UDP datagram.
 - On Linux, the server can capture packets with AF_PACKET while another program keeps receiving them on the same port.
 - AF_PACKET capture uses a TPACKET_V3 ring from gopacket and a classic BPF filter generated in Go. It needs neither cgo nor libpcap.
@@ -18,7 +18,7 @@ udp-tcp-tunnel carries UDP datagrams from one host to another over a single TCP 
 
 ## Overview
 
-The server (`udp-tcp-tunnel-server`) obtains UDP datagrams on the capture host, assigns each one to a channel and writes it to the TCP connection of the client. The client (`udp-tcp-tunnel-client`) connects to the server, reads the frames and sends each payload from its own UDP socket to the `target` of that channel.
+The server (`udp-tcp-tunnel-server`) obtains UDP datagrams on the capture host, assigns each one to a channel and writes it to the TCP connection of the client. The client (`udp-tcp-tunnel-client`) connects to one or more servers, reads the frames and sends each payload from its own UDP socket to the `target` of that channel. Each upstream keeps its own session and reconnect loop.
 
 The server obtains datagrams in one of two capture modes:
 
@@ -41,7 +41,7 @@ Download archives from the [releases page](https://github.com/nerdneilsfield/udp
 | Client | Linux and macOS on amd64 and arm64 | `udp-tcp-tunnel-client_<version>_<os>_<arch>.tar.gz` |
 | Client | Windows on amd64 and arm64 | `udp-tcp-tunnel-client_<version>_windows_<arch>.zip` |
 
-Each archive contains the binary, `README.md`, `LICENSE` and an example configuration file (`server.yaml` or `client.yaml`) at the top level. Every release also has a `checksums.txt` file with SHA-256 checksums.
+Each archive contains the binary, `README.md`, `LICENSE` and example configuration files at the top level (`server.yaml` for the server; `client.yaml` and `client-multi.yaml` for the client). Every release also has a `checksums.txt` file with SHA-256 checksums.
 
 The following commands install v0.1.0 of both binaries on Linux amd64:
 
@@ -279,12 +279,15 @@ Client (`client.yaml`):
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `server` | none | Server address as `host:port` |
+| `server` | none | Server address as `host:port` (single-upstream shape) |
+| `upstreams` | none | List of named servers to dial in parallel (multi-upstream shape; mutually exclusive with `server`/`channels`) |
 | `reconnect_backoff_min` | `1s` | First delay before a reconnect |
 | `reconnect_backoff_max` | `30s` | Longest delay before a reconnect |
 | `stats_interval` | `10s` | Interval between stats log lines |
-| `token` | empty | Must equal the server token |
-| `channels` | none | At least one channel with `id` and `target` |
+| `token` | empty | Default tunnel token; upstreams may override |
+| `channels` | none | Channels for the single-upstream shape |
+
+Use [examples/client-multi.yaml](examples/client-multi.yaml) when one process should dial several servers. Channel IDs are unique per upstream only.
 
 Unknown keys are rejected, so a misspelled key stops the program at startup.
 
@@ -295,7 +298,7 @@ Unknown keys are rejected, so a misspelled key stops the program at startup.
 - **TCP adds head-of-line blocking.** All channels share one TCP connection. A lost TCP segment delays every channel until it is retransmitted. When the connection cannot keep up, the server queue fills and the newest datagrams are dropped as `queue_full`.
 - **macOS limits outgoing datagram size.** macOS caps a UDP datagram at the `net.inet.udp.maxdgram` sysctl, which is 9216 bytes by default. A client on macOS cannot send a larger payload and counts it as `write_error`. Raise the limit with `sudo sysctl -w net.inet.udp.maxdgram=65535` if the tunnel carries larger datagrams.
 - **IP fragments are not reassembled.** In `afpacket` mode the server counts IPv4 first fragments as `fragment` and drops them. The kernel filter drops later IPv4 fragments and all IPv6 fragments without counting them. In `socket` mode the kernel reassembles fragments before the server reads them.
-- **The server serves one client.** A new client connection replaces the current one. Datagrams captured while no client is connected are dropped as `no_client`, and datagrams still queued when a client connects are discarded, so a client never receives old data.
+- **The server serves one client.** A new client connection replaces the current one. Datagrams captured while no client is connected are dropped as `no_client`, and datagrams still queued when a client connects are discarded, so a client never receives old data. One client process may still dial many servers; each server still accepts only one client session.
 - **Targets are resolved once.** The client resolves each `target` host name when it starts. Restart the client after a target address changes.
 - **AF_PACKET capture is tested only at the unit level.** The live capture test runs only as root, and CI runs the tests without root.
 

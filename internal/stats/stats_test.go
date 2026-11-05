@@ -24,7 +24,7 @@ func TestSnapshotRates(t *testing.T) {
 	reg.Global().Drop(UnknownChannel)
 	reg.Global().SetDrops(CaptureDrop, 7)
 
-	channels, global := reg.Snapshot(start.Add(2 * time.Second))
+	channels, globals := reg.Snapshot(start.Add(2 * time.Second))
 	if len(channels) != 2 {
 		t.Fatalf("got %d channels", len(channels))
 	}
@@ -38,6 +38,10 @@ func TestSnapshotRates(t *testing.T) {
 	if a.DropCount(QueueFull) != 2 || a.DropCount(Oversized) != 1 || a.DropCount(NoClient) != 0 {
 		t.Fatalf("unexpected drops: %+v", a.Drops)
 	}
+	if len(globals) != 1 {
+		t.Fatalf("got %d globals", len(globals))
+	}
+	global := globals[0]
 	if global.DropCount(UnknownChannel) != 1 || global.DropCount(CaptureDrop) != 7 {
 		t.Fatalf("unexpected global drops: %+v", global.Drops)
 	}
@@ -74,6 +78,27 @@ func TestLogFields(t *testing.T) {
 		if _, ok := fields[key]; !ok {
 			t.Fatalf("missing field %s", key)
 		}
+	}
+}
+
+func TestUpstreamLogFields(t *testing.T) {
+	core, logs := observer.New(zap.InfoLevel)
+	reg := New("client", zap.New(core))
+	ch := reg.AddUpstreamChannel("east", 1, "lidar")
+	ch.Add(10)
+	reg.UpstreamGlobal("east").Drop(UnknownChannel)
+
+	reg.Log(reg.last.Add(time.Second))
+
+	entries := logs.All()
+	if len(entries) != 2 {
+		t.Fatalf("got %d log entries", len(entries))
+	}
+	if entries[0].ContextMap()["upstream"] != "east" {
+		t.Fatalf("channel missing upstream: %v", entries[0].ContextMap())
+	}
+	if entries[1].ContextMap()["upstream"] != "east" {
+		t.Fatalf("global missing upstream: %v", entries[1].ContextMap())
 	}
 }
 

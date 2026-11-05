@@ -2,7 +2,9 @@ package tunnel
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -17,51 +19,140 @@ type sink struct {
 	counters *stats.Counters
 }
 
-// Client receives frames from the tunnel and re-emits each payload as a UDP
-// datagram to the channel's local target, reconnecting with backoff.
-type Client struct {
-	cfg    config.Client
+// upstreamRuntime is one dialer and its channel list.
+type upstreamRuntime struct {
+	cfg    config.Upstream
 	dialer Dialer
-	log    *zap.Logger
-	stats  *stats.Registry
+}
+
+// Client receives frames from one or more tunnel upstreams and re-emits each
+// payload as a UDP datagram to that channel's local target. Each upstream
+// reconnects with its own backoff.
+type Client struct {
+	cfg       config.Client
+	upstreams []upstreamRuntime
+	log       *zap.Logger
+	stats     *stats.Registry
 }
 
 // NewClient builds a client using the TCP/TLS transport from cfg.
 func NewClient(cfg config.Client, log *zap.Logger) (*Client, error) {
-	tlsConf, err := ClientTLSConfig(cfg.TLS, cfg.Server)
-	if err != nil {
+	cfg.SetDefaults()
+	if err := cfg.Normalize(); err != nil {
 		return nil, err
 	}
-	ids := make([]uint16, len(cfg.Channels))
-	for i, ch := range cfg.Channels {
-		ids[i] = ch.ID
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
-	dialer := NewTCPDialer(TCPDialerOptions{
-		Addr:     cfg.Server,
-		Token:    cfg.Token,
-		Channels: ids,
-		TLS:      tlsConf,
-	})
-	return NewClientWithDialer(cfg, dialer, log), nil
+	upstreams := make([]upstreamRuntime, 0, len(cfg.Upstreams))
+	for _, u := range cfg.Upstreams {
+		tlsCfg := config.ClientTLS{}
+		if u.TLS != nil {
+			tlsCfg = *u.TLS
+		}
+		tlsConf, err := ClientTLSConfig(tlsCfg, u.Server)
+		if err != nil {
+			return nil, fmt.Errorf("upstream %q: %w", u.Name, err)
+		}
+		ids := make([]uint16, len(u.Channels))
+		for i, ch := range u.Channels {
+			ids[i] = ch.ID
+		}
+		upstreams = append(upstreams, upstreamRuntime{
+			cfg: u,
+			dialer: NewTCPDialer(TCPDialerOptions{
+				Addr:     u.Server,
+				Token:    u.Token,
+				Channels: ids,
+				TLS:      tlsConf,
+			}),
+		})
+	}
+	return newClient(cfg, upstreams, log), nil
 }
 
-// NewClientWithDialer builds a client over any transport.
-func NewClientWithDialer(cfg config.Client, dialer Dialer, log *zap.Logger) *Client {
-	reg := stats.New("client", log)
-	for _, ch := range cfg.Channels {
-		reg.AddChannel(ch.ID, ch.Name)
+// NewClientWithDialer builds a single-upstream client over any transport.
+// cfg must describe exactly one upstream after Normalize.
+func NewClientWithDialer(cfg config.Client, dialer Dialer, log *zap.Logger) (*Client, error) {
+	cfg.SetDefaults()
+	if err := cfg.Normalize(); err != nil {
+		return nil, err
 	}
-	return &Client{cfg: cfg, dialer: dialer, log: log, stats: reg}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	if len(cfg.Upstreams) != 1 {
+		return nil, fmt.Errorf("NewClientWithDialer requires exactly one upstream, got %d", len(cfg.Upstreams))
+	}
+	return newClient(cfg, []upstreamRuntime{{cfg: cfg.Upstreams[0], dialer: dialer}}, log), nil
+}
+
+// NewClientWithDialers builds a client over the provided dialers, keyed by
+// upstream name. Every configured upstream must have a dialer.
+func NewClientWithDialers(cfg config.Client, dialers map[string]Dialer, log *zap.Logger) (*Client, error) {
+	cfg.SetDefaults()
+	if err := cfg.Normalize(); err != nil {
+		return nil, err
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	upstreams := make([]upstreamRuntime, 0, len(cfg.Upstreams))
+	for _, u := range cfg.Upstreams {
+		d, ok := dialers[u.Name]
+		if !ok {
+			return nil, fmt.Errorf("missing dialer for upstream %q", u.Name)
+		}
+		upstreams = append(upstreams, upstreamRuntime{cfg: u, dialer: d})
+	}
+	return newClient(cfg, upstreams, log), nil
+}
+
+func newClient(cfg config.Client, upstreams []upstreamRuntime, log *zap.Logger) *Client {
+	reg := stats.New("client", log)
+	for _, u := range upstreams {
+		for _, ch := range u.cfg.Channels {
+			reg.AddUpstreamChannel(u.cfg.Name, ch.ID, ch.Name)
+		}
+	}
+	return &Client{cfg: cfg, upstreams: upstreams, log: log, stats: reg}
 }
 
 // Stats exposes the counters, mainly for tests.
 func (c *Client) Stats() *stats.Registry { return c.stats }
 
-// Run connects and forwards until ctx is canceled, which returns nil.
+// Run connects every upstream and forwards until ctx is canceled, which
+// returns nil. Upstream sessions reconnect independently.
 func (c *Client) Run(ctx context.Context) error {
-	sinks, err := c.openSinks()
+	go c.stats.Run(ctx, c.cfg.StatsInterval, nil)
+
+	var wg sync.WaitGroup
+	errCh := make(chan error, len(c.upstreams))
+	for _, u := range c.upstreams {
+		u := u
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := c.runUpstream(ctx, u); err != nil {
+				errCh <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Client) runUpstream(ctx context.Context, u upstreamRuntime) error {
+	log := c.log.With(zap.String("upstream", u.cfg.Name), zap.String("server", u.cfg.Server))
+	sinks, err := c.openSinks(u.cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("upstream %q: %w", u.cfg.Name, err)
 	}
 	defer func() {
 		for _, s := range sinks {
@@ -69,37 +160,34 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 	}()
 
-	go c.stats.Run(ctx, c.cfg.StatsInterval, nil)
-
-	backoff := c.cfg.ReconnectMin
+	backoff := u.cfg.ReconnectMin
 	for ctx.Err() == nil {
-		sess, err := c.dialer.Dial(ctx)
+		sess, err := u.dialer.Dial(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				break
 			}
-			c.log.Warn("connect failed", zap.String("server", c.cfg.Server),
-				zap.Error(err), zap.Duration("retry_in", backoff))
+			log.Warn("connect failed", zap.Error(err), zap.Duration("retry_in", backoff))
 			sleep(ctx, backoff)
-			backoff = min(backoff*2, c.cfg.ReconnectMax)
+			backoff = min(backoff*2, u.cfg.ReconnectMax)
 			continue
 		}
-		backoff = c.cfg.ReconnectMin
-		c.log.Info("connected", zap.String("server", sess.RemoteAddr()))
+		backoff = u.cfg.ReconnectMin
+		log.Info("connected", zap.String("peer", sess.RemoteAddr()))
 
-		err = c.receive(ctx, sess, sinks)
+		err = c.receive(ctx, u.cfg.Name, sess, sinks)
 		if ctx.Err() != nil {
 			break
 		}
-		c.log.Warn("disconnected", zap.Error(err), zap.Duration("retry_in", backoff))
+		log.Warn("disconnected", zap.Error(err), zap.Duration("retry_in", backoff))
 		sleep(ctx, backoff)
 	}
 	return nil
 }
 
-func (c *Client) openSinks() (map[uint16]*sink, error) {
-	sinks := make(map[uint16]*sink, len(c.cfg.Channels))
-	for _, ch := range c.cfg.Channels {
+func (c *Client) openSinks(u config.Upstream) (map[uint16]*sink, error) {
+	sinks := make(map[uint16]*sink, len(u.Channels))
+	for _, ch := range u.Channels {
 		addr, err := net.ResolveUDPAddr("udp", ch.Target)
 		if err != nil {
 			return nil, err
@@ -108,13 +196,16 @@ func (c *Client) openSinks() (map[uint16]*sink, error) {
 		if err != nil {
 			return nil, err
 		}
-		sinks[ch.ID] = &sink{conn: conn, counters: c.stats.Channel(ch.ID)}
+		sinks[ch.ID] = &sink{
+			conn:     conn,
+			counters: c.stats.UpstreamChannel(u.Name, ch.ID),
+		}
 	}
 	return sinks, nil
 }
 
 // receive pumps frames from sess into the UDP sinks until the session ends.
-func (c *Client) receive(ctx context.Context, sess Session, sinks map[uint16]*sink) error {
+func (c *Client) receive(ctx context.Context, upstream string, sess Session, sinks map[uint16]*sink) error {
 	stop := context.AfterFunc(ctx, func() { _ = sess.Close() })
 	defer stop()
 	defer func() { _ = sess.Close() }()
@@ -126,7 +217,7 @@ func (c *Client) receive(ctx context.Context, sess Session, sinks map[uint16]*si
 		}
 		s, ok := sinks[id]
 		if !ok {
-			c.stats.Global().Drop(stats.UnknownChannel)
+			c.stats.UpstreamGlobal(upstream).Drop(stats.UnknownChannel)
 			continue
 		}
 		if _, err := s.conn.Write(payload); err != nil {

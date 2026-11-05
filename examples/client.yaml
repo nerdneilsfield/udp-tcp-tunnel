@@ -3,7 +3,10 @@
 # Every key is described in
 # https://github.com/nerdneilsfield/udp-tcp-tunnel/blob/master/docs/configuration.md
 
-# Address of udp-tcp-tunnel-server as host:port. Required.
+# Address of udp-tcp-tunnel-server as host:port. Required for the
+# single-upstream shape. To dial several servers from one process, use
+# `upstreams` instead (see examples/client-multi.yaml) and omit `server`
+# and top-level `channels`.
 server: "192.168.1.10:9000"
 
 # The reconnect delay starts at the minimum, doubles after each failed attempt

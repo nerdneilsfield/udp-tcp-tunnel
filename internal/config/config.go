@@ -33,6 +33,7 @@ const (
 	DefaultStatsInterval  = 10 * time.Second
 	DefaultBackoffInitial = time.Second
 	DefaultBackoffCeiling = 30 * time.Second
+	DefaultUpstreamName   = "default"
 )
 
 // ServerTLS configures TLS on the tunnel listener.
@@ -66,6 +67,18 @@ type ClientChannel struct {
 	Target string `yaml:"target"`
 }
 
+// Upstream is one tunnel server the client dials, with its own channel list.
+// After Normalize, every client config has at least one Upstream.
+type Upstream struct {
+	Name         string          `yaml:"name"`
+	Server       string          `yaml:"server"`
+	Token        string          `yaml:"token"`
+	TLS          *ClientTLS      `yaml:"tls"`
+	ReconnectMin time.Duration   `yaml:"reconnect_backoff_min"`
+	ReconnectMax time.Duration   `yaml:"reconnect_backoff_max"`
+	Channels     []ClientChannel `yaml:"channels"`
+}
+
 // Server is the configuration of udp-tcp-tunnel-server.
 type Server struct {
 	Listen        string          `yaml:"listen"`
@@ -81,6 +94,14 @@ type Server struct {
 }
 
 // Client is the configuration of udp-tcp-tunnel-client.
+//
+// Two shapes are accepted:
+//   - single upstream: top-level server + channels (and shared token/tls/backoff)
+//   - multiple upstreams: an upstreams list; each entry has its own server and channels
+//
+// The two shapes are mutually exclusive. Normalize turns the single-upstream
+// shape into one Upstream named "default" and fills omitted per-upstream
+// token, TLS and backoff from the top-level defaults.
 type Client struct {
 	Server        string          `yaml:"server"`
 	ReconnectMin  time.Duration   `yaml:"reconnect_backoff_min"`
@@ -89,6 +110,7 @@ type Client struct {
 	Token         string          `yaml:"token"`
 	TLS           ClientTLS       `yaml:"tls"`
 	Channels      []ClientChannel `yaml:"channels"`
+	Upstreams     []Upstream      `yaml:"upstreams"`
 }
 
 // LoadServer reads, defaults and validates a server config file.
@@ -104,13 +126,16 @@ func LoadServer(path string) (Server, error) {
 	return cfg, nil
 }
 
-// LoadClient reads, defaults and validates a client config file.
+// LoadClient reads, defaults, normalizes and validates a client config file.
 func LoadClient(path string) (Client, error) {
 	var cfg Client
 	if err := load(path, &cfg); err != nil {
 		return Client{}, err
 	}
 	cfg.SetDefaults()
+	if err := cfg.Normalize(); err != nil {
+		return Client{}, fmt.Errorf("invalid client config %s: %w", path, err)
+	}
 	if err := cfg.Validate(); err != nil {
 		return Client{}, fmt.Errorf("invalid client config %s: %w", path, err)
 	}
@@ -152,7 +177,7 @@ func (s *Server) SetDefaults() {
 	}
 }
 
-// SetDefaults fills omitted optional fields.
+// SetDefaults fills omitted optional top-level fields.
 func (c *Client) SetDefaults() {
 	if c.ReconnectMin == 0 {
 		c.ReconnectMin = DefaultBackoffInitial
@@ -163,6 +188,55 @@ func (c *Client) SetDefaults() {
 	if c.StatsInterval == 0 {
 		c.StatsInterval = DefaultStatsInterval
 	}
+}
+
+// Normalize turns the single-upstream shape into Upstreams and applies
+// top-level token, TLS and backoff defaults to each upstream entry.
+func (c *Client) Normalize() error {
+	hasServer := c.Server != ""
+	hasChannels := len(c.Channels) > 0
+	hasUpstreams := len(c.Upstreams) > 0
+
+	var errs []error
+	if hasUpstreams && (hasServer || hasChannels) {
+		if hasServer {
+			errs = append(errs, errors.New("server: cannot be set together with upstreams"))
+		}
+		if hasChannels {
+			errs = append(errs, errors.New("channels: cannot be set together with upstreams"))
+		}
+		return errors.Join(errs...)
+	}
+	if !hasUpstreams {
+		tls := c.TLS
+		c.Upstreams = []Upstream{{
+			Name:         DefaultUpstreamName,
+			Server:       c.Server,
+			Token:        c.Token,
+			TLS:          &tls,
+			ReconnectMin: c.ReconnectMin,
+			ReconnectMax: c.ReconnectMax,
+			Channels:     c.Channels,
+		}}
+		return nil
+	}
+	for i := range c.Upstreams {
+		u := &c.Upstreams[i]
+		if u.Token == "" {
+			u.Token = c.Token
+		}
+		if u.TLS == nil {
+			tls := c.TLS
+			u.TLS = &tls
+		}
+		if u.ReconnectMin == 0 {
+			u.ReconnectMin = c.ReconnectMin
+		}
+		if u.ReconnectMax == 0 {
+			u.ReconnectMax = c.ReconnectMax
+		}
+	}
+	return nil
 }
 
 // Validate reports every problem found in the server config.
@@ -210,15 +284,13 @@ func (s *Server) Validate() error {
 }
 
 // Validate reports every problem found in the client config.
+// Call Normalize before Validate so Upstreams is populated.
 func (c *Client) Validate() error {
 	var errs []error
 	add := func(format string, args ...any) {
 		errs = append(errs, fmt.Errorf(format, args...))
 	}
 
-	if err := checkHostPort(c.Server, true); err != nil {
-		add("server: %v", err)
-	}
 	if c.ReconnectMin <= 0 {
 		add("reconnect_backoff_min: must be positive")
 	}
@@ -234,7 +306,43 @@ func (c *Client) Validate() error {
 	if !c.TLS.Enabled && (c.TLS.CAFile != "" || c.TLS.ServerName != "" || c.TLS.InsecureSkipVerify) {
 		add("tls: options are set but tls.enabled is false")
 	}
-	errs = append(errs, validateClientChannels(c.Channels)...)
+	if len(c.Upstreams) == 0 {
+		add("upstreams: at least one upstream is required")
+		return errors.Join(errs...)
+	}
+	names := make(map[string]int)
+	for i, u := range c.Upstreams {
+		prefix := fmt.Sprintf("upstreams[%d]", i)
+		if u.Name == "" {
+			add("%s: name is required", prefix)
+		} else if first, dup := names[u.Name]; dup {
+			add("%s: name %q already used by upstreams[%d]", prefix, u.Name, first)
+		} else {
+			names[u.Name] = i
+		}
+		if err := checkHostPort(u.Server, true); err != nil {
+			add("%s: server: %v", prefix, err)
+		}
+		if len(u.Token) > MaxTokenLen {
+			add("%s: token: longer than %d bytes", prefix, MaxTokenLen)
+		}
+		if u.ReconnectMin <= 0 {
+			add("%s: reconnect_backoff_min: must be positive", prefix)
+		}
+		if u.ReconnectMax < u.ReconnectMin {
+			add("%s: reconnect_backoff_max: must not be below reconnect_backoff_min", prefix)
+		}
+		tls := ClientTLS{}
+		if u.TLS != nil {
+			tls = *u.TLS
+		}
+		if !tls.Enabled && (tls.CAFile != "" || tls.ServerName != "" || tls.InsecureSkipVerify) {
+			add("%s: tls: options are set but tls.enabled is false", prefix)
+		}
+		for _, err := range validateClientChannels(u.Channels) {
+			add("%s: %v", prefix, err)
+		}
+	}
 	return errors.Join(errs...)
 }
 

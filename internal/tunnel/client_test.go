@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/config"
+	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/stats"
 	"github.com/nerdneilsfield/udp-tcp-tunnel/internal/tunnel"
 )
 
@@ -55,7 +56,7 @@ func acceptSession(t *testing.T, l *tunnel.TCPListener) tunnel.Session {
 }
 
 func clientConfig(addr string, target *net.UDPConn) config.Client {
-	cfg := config.Client{
+	return config.Client{
 		Server:        addr,
 		ReconnectMin:  20 * time.Millisecond,
 		ReconnectMax:  100 * time.Millisecond,
@@ -63,7 +64,6 @@ func clientConfig(addr string, target *net.UDPConn) config.Client {
 		Token:         "tok",
 		Channels:      []config.ClientChannel{{ID: 1, Name: "one", Target: target.LocalAddr().String()}},
 	}
-	return cfg
 }
 
 func TestClientReconnects(t *testing.T) {
@@ -164,6 +164,13 @@ func TestClientPreservesBoundariesAndDropsUnknownChannel(t *testing.T) {
 			t.Fatalf("datagram %d: got %d bytes, want %d", i, len(got), len(want))
 		}
 	}
+	deadline := time.Now().Add(2 * time.Second)
+	for client.Stats().UpstreamGlobal(config.DefaultUpstreamName).Drops(stats.UnknownChannel) == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if client.Stats().UpstreamGlobal(config.DefaultUpstreamName).Drops(stats.UnknownChannel) != 1 {
+		t.Fatalf("unknown channel drops = %d", client.Stats().UpstreamGlobal(config.DefaultUpstreamName).Drops(stats.UnknownChannel))
+	}
 }
 
 func TestHandshakeRejections(t *testing.T) {
@@ -217,12 +224,88 @@ func TestClientStatsCountDelivered(t *testing.T) {
 		}
 		readUDP(t, target)
 	}
-	counters := client.Stats().Channel(1)
+	counters := client.Stats().UpstreamChannel(config.DefaultUpstreamName, 1)
 	deadline := time.Now().Add(2 * time.Second)
 	for counters.Packets() != 3 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond) // the counter is bumped just after the write
 	}
 	if counters.Packets() != 3 || counters.Bytes() != 15 {
 		t.Fatalf("packets=%d bytes=%d", counters.Packets(), counters.Bytes())
+	}
+}
+
+func TestClientMultipleUpstreams(t *testing.T) {
+	targetEast := udpListener(t)
+	targetWest := udpListener(t)
+
+	east, err := tunnel.ListenTCP("127.0.0.1:0", tunnel.TCPServerOptions{Token: "tok", Channels: []uint16{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer east.Close()
+	west, err := tunnel.ListenTCP("127.0.0.1:0", tunnel.TCPServerOptions{Token: "tok", Channels: []uint16{1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer west.Close()
+
+	cfg := config.Client{
+		ReconnectMin:  20 * time.Millisecond,
+		ReconnectMax:  100 * time.Millisecond,
+		StatsInterval: time.Hour,
+		Token:         "tok",
+		Upstreams: []config.Upstream{
+			{
+				Name:   "east",
+				Server: east.Addr(),
+				Channels: []config.ClientChannel{
+					{ID: 1, Name: "from-east", Target: targetEast.LocalAddr().String()},
+				},
+			},
+			{
+				Name:   "west",
+				Server: west.Addr(),
+				Channels: []config.ClientChannel{
+					{ID: 1, Name: "from-west", Target: targetWest.LocalAddr().String()},
+				},
+			},
+		},
+	}
+	client, err := tunnel.NewClient(cfg, zap.NewNop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- client.Run(ctx) }()
+
+	sessEast := acceptSession(t, east)
+	sessWest := acceptSession(t, west)
+	must(t, sessEast.Send(1, []byte("east-payload")))
+	must(t, sessWest.Send(1, []byte("west-payload")))
+	if got := readUDP(t, targetEast); string(got) != "east-payload" {
+		t.Fatalf("east target: %q", got)
+	}
+	if got := readUDP(t, targetWest); string(got) != "west-payload" {
+		t.Fatalf("west target: %q", got)
+	}
+
+	// Killing one upstream must not stop the other.
+	sessEast.Close()
+	east.Close()
+	time.Sleep(100 * time.Millisecond)
+	must(t, sessWest.Send(1, []byte("west-still-alive")))
+	if got := readUDP(t, targetWest); string(got) != "west-still-alive" {
+		t.Fatalf("west after east death: %q", got)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("client did not stop on cancel")
 	}
 }

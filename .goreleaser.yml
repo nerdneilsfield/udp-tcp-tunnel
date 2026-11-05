@@ -56,6 +56,8 @@ archives:
       - docs/*
       - src: examples/client.yaml
         dst: client.yaml
+      - src: examples/client-multi.yaml
+        dst: client-multi.yaml
 
 checksum:
   name_template: checksums.txt

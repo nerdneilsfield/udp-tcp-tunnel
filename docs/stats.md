@@ -4,7 +4,7 @@ Both binaries log traffic counters at every `stats_interval` (default `10s`). Th
 
 ## Log format
 
-Logs go to standard error in the zap console format: a timestamp in the local time zone with its UTC offset, the level, the message, and the fields as a JSON object, separated by tabs. Each report has one `channel stats` line per channel, in ascending channel ID order, followed by one `global drops` line.
+Logs go to standard error in the zap console format: a timestamp in the local time zone with its UTC offset, the level, the message, and the fields as a JSON object, separated by tabs. Each report has one `channel stats` line per channel, ordered by upstream name then ascending channel ID, followed by one `global drops` line per upstream (one line with no `upstream` field on the server).
 
 This report comes from the server in the [quick start](../README.md#quick-start), after three datagrams of 7 bytes each:
 
@@ -20,6 +20,7 @@ The first report appears one interval after startup. No report is written at shu
 | Field | Line | Meaning |
 | --- | --- | --- |
 | `side` | both | `server` or `client` |
+| `upstream` | client | Upstream `name` from the configuration. Present on every client `channel stats` and `global drops` line. Absent on the server. |
 | `channel` | `channel stats` | Channel ID |
 | `name` | `channel stats` | Channel `name` from the configuration, or empty |
 | `pps` | `channel stats` | Packets per second since the previous report, rounded to two decimals |
@@ -38,7 +39,7 @@ The drop counters are cumulative. Both lines always carry all seven `drop_` fiel
 | --- | --- | --- | --- |
 | `queue_full` | server | `channel stats` | The queue of `queue_size` datagrams was full. The newest datagram was dropped. |
 | `unknown_channel` | server | `global drops` | A captured datagram matched no channel |
-| `unknown_channel` | client | `global drops` | A frame carried a channel ID that the client configuration does not list |
+| `unknown_channel` | client | `global drops` | A frame carried a channel ID that that upstream's channel list does not include |
 | `oversized` | server | `channel stats` | The payload was larger than `max_payload` |
 | `fragment` | server | `global drops` | An IPv4 first fragment was captured in `afpacket` mode. See [Fragments](capture-modes.md#fragments). |
 | `capture_drop` | server | `global drops` | AF_PACKET kernel drops (`PACKET_STATISTICS`). |
