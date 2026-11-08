@@ -31,6 +31,21 @@ udp-tcp-tunnel is not a VPN or a general port forwarder. Data flows in one direc
 
 The project is early and experimental. The first release is v0.1.0. The configuration format and the wire protocol can change between 0.x releases.
 
+## Homebrew / Scoop
+
+```bash
+# macOS / Linux
+brew install --cask nerdneilsfield/apps/udp-tcp-tunnel-client
+# The server is Linux only
+brew install --cask nerdneilsfield/apps/udp-tcp-tunnel-server
+```
+
+```powershell
+# Windows
+scoop bucket add nerdneilsfield https://github.com/nerdneilsfield/homebrew-apps
+scoop install nerdneilsfield/udp-tcp-tunnel-client
+```
+
 ## Installation
 
 ### Release archives

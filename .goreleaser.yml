@@ -83,3 +83,49 @@ changelog:
 release:
   draft: false
   prerelease: auto
+
+# Publish to the nerdneilsfield/homebrew-apps tap and Scoop bucket.
+homebrew_casks:
+  - name: udp-tcp-tunnel-client
+    ids:
+      - client
+    homepage: https://github.com/nerdneilsfield/udp-tcp-tunnel
+    description: Multi-channel UDP over TCP tunnel client with transparent packet forwarding
+    binaries:
+      - udp-tcp-tunnel-client
+    directory: Casks
+    repository:
+      owner: nerdneilsfield
+      name: homebrew-apps
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+    hooks:
+      post:
+        install_steps: |
+          on_macos do
+            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/udp-tcp-tunnel-client"]
+          end
+  - name: udp-tcp-tunnel-server
+    ids:
+      - server
+    homepage: https://github.com/nerdneilsfield/udp-tcp-tunnel
+    description: Multi-channel UDP over TCP tunnel server with transparent packet forwarding
+    binaries:
+      - udp-tcp-tunnel-server
+    directory: Casks
+    repository:
+      owner: nerdneilsfield
+      name: homebrew-apps
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
+
+scoops:
+  - name: udp-tcp-tunnel-client
+    ids:
+      - client
+    homepage: https://github.com/nerdneilsfield/udp-tcp-tunnel
+    description: Multi-channel UDP over TCP tunnel client with transparent packet forwarding
+    license: MIT
+    directory: bucket
+    repository:
+      owner: nerdneilsfield
+      name: homebrew-apps
+      token: "{{ .Env.TAP_GITHUB_TOKEN }}"
